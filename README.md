@@ -7,7 +7,7 @@ This project focuses on forecasting Amazon product sales by combining reviews, r
   - Clean and tokenize reviews  
   - Extract features such as ratings and review counts  
   - Assess image quality using computer vision metrics  
-  - Merge structured and unstructured data into a single dataset  
+  - Merge structured and unstructured data into a single dataset
 
 ---
 
@@ -36,7 +36,7 @@ This project focuses on forecasting Amazon product sales by combining reviews, r
 Follow these steps to set up your environment and stay in sync with the team.  
 
 ### 1. Clone the Repository  
-git clone https://github.com/username/Forecasting-Amazon-Sales-with-Multimodal-Data.git  
+git clone https://github.com/DylanSuniaga/Forecasting-Amazon-Sales-with-Multimodal-Data.git  
 cd repo-name  
 
 ### 2. Set Up a Virtual Environment  
