@@ -1,21 +1,79 @@
-MIT License
+Attribution-NonCommercial License
 
 Copyright (c) 2025 Dylan Suniaga
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software and associated documentation files (the "Work") are provided 
+under the following terms:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+GRANT OF RIGHTS:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+1. Personal and Educational Use
+   You are granted a worldwide, royalty-free, non-exclusive license to:
+   - Use the Work for personal, educational, or research purposes
+   - Study and learn from the Work
+   - Share and redistribute the Work (with attribution)
+   - Modify and create derivative works (with attribution)
+
+2. Attribution Requirement
+   All uses, distributions, and derivative works must:
+   - Include this license file
+   - Provide clear attribution to Dylan Suniaga
+   - Link to the original repository when possible
+   - Indicate if modifications were made
+
+RESTRICTIONS:
+
+1. Commercial Use Prohibited
+   WITHOUT EXPLICIT WRITTEN PERMISSION, you may NOT:
+   - Use the Work for commercial purposes
+   - Sell, license, or monetize the Work or derivatives
+   - Use the Work in any product or service that generates revenue
+   - Use the Work in consulting or professional services for compensation
+   
+   "Commercial purposes" includes but is not limited to:
+   - Integration into commercial products or services
+   - Use in revenue-generating businesses or operations
+   - Consulting or contracting work using this Work
+   - Any activity that directly or indirectly generates income
+
+2. Copyright Holder Rights Reserved
+   Dylan Suniaga retains ALL RIGHTS to:
+   - Use this Work commercially without restriction
+   - Grant commercial licenses to third parties
+   - Create and sell derivative works
+   - Monetize this Work in any form
+   - Change these license terms for future versions
+
+COMMERCIAL LICENSING:
+
+For commercial use, consulting services, or custom implementations:
+Contact: Dylan Suniaga
+Email: dsuniaga001@gmail.com
+
+Commercial licenses can be negotiated on a case-by-case basis.
+
+DISCLAIMER:
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+OUT OF OR IN CONNECTION WITH THE WORK OR THE USE OR OTHER DEALINGS IN THE
+WORK.
+
+TERMINATION:
+
+This license terminates automatically if you violate any of its terms.
+Upon termination, you must destroy all copies of the Work in your possession.
+
+GOVERNING LAW:
+
+This license shall be governed by and construed in accordance with the laws
+of the jurisdiction in which the copyright holder resides, without regard to
+its conflict of law provisions.
+
+---
+
+For the complete license terms or questions, contact:
+Dylan Suniaga - dsuniaga001@gmail.com

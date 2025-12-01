@@ -1,36 +1,134 @@
-# Forecasting-Amazon-Sales-with-Multimodal-Data
-This project focuses on forecasting Amazon product sales by combining reviews, ratings, and product image quality. By analyzing both customer feedback and visual presentation, it highlights how these factors contribute to sales performance.
+# Amazon Best Seller Rank Prediction using Multimodal Analysis
 
-## Dataset & Preprocessing  
-- **Data Sources:** Amazon product listings, reviews, and product images (tentative)
-- **Preprocessing:**  
-  - Clean and tokenize reviews  
-  - Extract features such as ratings and review counts  
-  - Assess image quality using computer vision metrics  
-  - Merge structured and unstructured data into a single dataset
+This project predicts Amazon product Best Seller Rank (BSR) using a multimodal machine learning approach that combines **product images**, **text/NLP features**, and **metadata**. The goal is to understand which product characteristics drive sales performance on Amazon.
 
 ---
 
-## Methodology  
-- **Text Data:** Natural Language Processing (sentiment analysis, embeddings)  
-- **Image Data:** Convolutional Neural Networks (CNNs) for quality/feature extraction  
-- **Sales Forecasting:** Regression and machine learning models trained on combined features  
+## 🎯 Project Overview
+
+This analysis uses **~19,000 Amazon electronics products** to predict sales performance through a two-stage modeling approach:
+
+1. **Classification Model**: Predicts whether a product will be ranked (have BSR) or not
+2. **Regression Model**: Predicts the actual BSR value for ranked products
+
+The project demonstrates that multimodal features (visual + text + metadata) can effectively predict product performance, with **image quality** and **product presentation** being key factors.
 
 ---
 
-## Project Completion Guide  
+## 📊 Key Findings
 
-1. **Data Collection** – Gather Amazon product listings, reviews, and images, as well as a desired label (person buys, person leaves a review, etc.)  
-2. **Data Cleaning** – Remove duplicates, handle missing values, preprocess text and images  
-3. **Feature Engineering** – Create numerical features from ratings, reviews, and image scores  
-4. **Exploratory Data Analysis (EDA)** – Identify trends and correlations  
-5. **Model Training** – Train models separately on text, images, and combined features  
-6. **Model Evaluation** – Compare performance with metrics such as RMSE, R², and accuracy  
-7. **Final Integration** – Build a multimodal forecasting model  
-8. **Results & Visualization** – Summarize findings with charts and metrics  
+### Model Performance
+
+#### Classification (Has BSR Ranking?)
+- **XGBoost Classifier**: 90% accuracy, 0.94 F1 score, 0.85 ROC AUC
+- Successfully identifies products likely to achieve sales rankings
+- Far outperforms Logistic Regression baseline (74% accuracy)
+
+#### Regression (Predict BSR Value)
+- **XGBoost Regressor**: R² = 0.27, RMSE = 1.76 (log-space)
+- Explains 27% of variance in Best Seller Rank
+- Average prediction error: ~2,500 BSR points
+- 22.3% of predictions within 50% error margin
+
+### Important Features Discovered
+
+**Top Predictors for BSR:**
+1. **Background neutral percentage** (13.3% importance) - Clean, neutral backgrounds correlate with better rankings
+2. **Largest cluster percentage** (10.9%) - Image color composition affects sales
+3. **Background white percentage** (9.3%) - Professional white backgrounds matter
+4. **Image count** (8.4%) - More product images correlate with better performance
+5. **Clutter score** (7.9%) - Less cluttered images perform better
+
+**Text & NLP Features:**
+- Title length and readability scores
+- Keyword presence (premium, bundle, new, size indicators)
+- Customer sentiment distribution (positive/negative/mixed)
+- Character count and word complexity
+
+**Image Quality Metrics:**
+- Sharpness (Laplacian variance)
+- Contrast and saturation
+- Edge density and color entropy
+- Technical quality composite scores
 
 ---
-# Team Setup Guide
+
+## 🔬 Methodology
+
+### 1. Data Collection (`notebooks/00-Data Downloading/`)
+- **Amazon SP-API Integration**: Retrieved 19,000+ product listings
+- **Keywords**: Electronics categories (keyboards, mice, phones, TVs, gaming, photography, etc.)
+- **Data Points**: ASINs, titles, brands, images, classifications, sales ranks
+
+### 2. Image Analysis (`notebooks/02-Image Analysis/`)
+- **Computer Vision Pipeline**: OpenCV-based analysis
+- **Clutter Detection**: Edge density, color clustering, background analysis
+- **Quality Metrics**: Sharpness, exposure, contrast, saturation, noise estimation
+- **YOLO Integration**: Object detection for image composition
+
+### 3. NLP Processing (`notebooks/03-NLP/`)
+- **Text Preprocessing**: Tokenization and cleaning
+- **Feature Extraction**: 
+  - Title length, word count, average word length
+  - Readability scores (Flesch Reading Ease, syllable count)
+  - Keyword flags (premium, bundle, new, size indicators)
+- **Sentiment Analysis**: JSON parsing of customer sentiment data
+
+### 4. Base Modeling (`notebooks/01-Base Model with Visuals/`)
+- **Random Forest Baseline**: Initial BSR prediction using visual features
+- **Results**: R² = 0.255, identified key image quality predictors
+
+### 5. Final Multimodal Model (`notebooks/05-Final Modeling/`)
+- **Feature Integration**: Combined 80+ features from images, text, and metadata
+- **Two-Stage Pipeline**:
+  1. Classification: Predict ranking eligibility
+  2. Regression: Predict actual BSR for ranked products
+- **XGBoost Models**: Optimized with hyperparameter tuning
+
+---
+
+## 💡 Business Insights
+
+1. **Image Quality Matters**: Professional product photography with clean backgrounds significantly impacts sales ranking
+2. **Visual Simplicity Wins**: Less cluttered images with neutral/white backgrounds perform better
+3. **Multiple Images Help**: Products with more images tend to rank better
+4. **Title Optimization**: Readable titles with relevant keywords correlate with better performance
+5. **Sentiment Signals**: Customer sentiment distribution provides predictive power
+
+---
+
+## 📈 Potential Applications
+
+- **Product Listing Optimization**: Predict BSR before launch to optimize listings
+- **Competitive Analysis**: Understand what makes competitor products successful
+- **A/B Testing**: Test different image/title combinations
+- **Inventory Planning**: Predict demand based on listing characteristics
+- **Marketing Strategy**: Focus resources on products with predicted high rankings
+
+---
+
+## 🔐 Licensing & Commercial Use
+
+This project is available for **non-commercial use only**. If you're interested in commercial licensing, consulting services, or custom analysis:
+
+**📧 Contact**: Dylan Suniaga at [dsuniaga001@gmail.com](mailto:dsuniaga001@gmail.com)
+
+See LICENSE file for full legal terms.
+
+---
+
+## 🛠️ Technical Stack
+
+- **Python 3.10+**
+- **Data Processing**: pandas, numpy
+- **Machine Learning**: scikit-learn, XGBoost
+- **Computer Vision**: OpenCV, YOLO
+- **NLP**: textstat, sentiment analysis
+- **Visualization**: matplotlib, seaborn
+
+---
+
+# 📦 Setup Guide
 
 This document walks you through creating the **Conda environment** from our `.yml` file on **macOS** and **Windows**, optionally setting it up in **VS Code**, and the **Git workflow** for cloning, branching, committing, and pushing to this repo. Please read carefully and follow the steps.
 
@@ -190,3 +288,28 @@ Please **do not commit**:
 - Credentials, API keys, tokens
 - `.env` files or secrets
 - System files: `.DS_Store`, `Thumbs.db`
+
+---
+
+## 📞 Contact
+
+For questions, collaboration opportunities, or commercial licensing inquiries:
+
+**Dylan Suniaga**  
+📧 Email: [dsuniaga001@gmail.com](mailto:dsuniaga001@gmail.com)  
+🔗 GitHub: [DylanSuniaga](https://github.com/DylanSuniaga)
+
+---
+
+## 📄 Citation
+
+If you use this work in research or publications, please cite:
+
+```
+Dylan Suniaga (2025). Amazon Best Seller Rank Prediction using Multimodal Analysis.
+GitHub repository: https://github.com/DylanSuniaga/Forecasting-Amazon-Sales-with-Multimodal-Data
+```
+
+---
+
+**© 2025 Dylan Suniaga. This project is licensed for non-commercial use only. See LICENSE for details.**
