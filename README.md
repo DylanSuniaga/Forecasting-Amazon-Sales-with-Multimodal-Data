@@ -107,14 +107,6 @@ The project demonstrates that multimodal features (visual + text + metadata) can
 
 ---
 
-## 🔐 Licensing & Commercial Use
-
-This project is available for **non-commercial use only**. If you're interested in commercial licensing, consulting services, or custom analysis:
-
-**📧 Contact**: Dylan Suniaga at [dsuniaga001@gmail.com](mailto:dsuniaga001@gmail.com)
-
-See LICENSE file for full legal terms.
-
 ---
 
 ## 🛠️ Technical Stack
@@ -293,7 +285,7 @@ Please **do not commit**:
 
 ## 📞 Contact
 
-For questions, collaboration opportunities, or commercial licensing inquiries:
+For questions or collaboration opportunities:
 
 **Dylan Suniaga**  
 📧 Email: [dsuniaga001@gmail.com](mailto:dsuniaga001@gmail.com)  
@@ -312,4 +304,4 @@ GitHub repository: https://github.com/DylanSuniaga/Forecasting-Amazon-Sales-with
 
 ---
 
-**© 2025 Dylan Suniaga. This project is licensed for non-commercial use only. See LICENSE for details.**
+**© 2025 Dylan Suniaga. See LICENSE file for terms of use.**
