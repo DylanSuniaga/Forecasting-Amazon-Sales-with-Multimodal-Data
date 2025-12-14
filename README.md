@@ -28,7 +28,9 @@ The project demonstrates that multimodal features (visual + text + metadata) can
 - **XGBoost Regressor**: R² = 0.27, RMSE = 1.76 (log-space)
 - Explains 27% of variance in Best Seller Rank
 - Average prediction error: ~2,500 BSR points
-- 22.3% of predictions within 50% error margin
+- Confidence stratification analysis shows significant performance differences:
+  - High-confidence predictions (top 25%): Lower RMSE, higher accuracy
+  - Low-confidence predictions (bottom 25%): Higher RMSE, require manual review
 
 ### Important Features Discovered
 
@@ -56,9 +58,15 @@ The project demonstrates that multimodal features (visual + text + metadata) can
 ## 🔬 Methodology
 
 ### 1. Data Collection (`notebooks/00-Data Downloading/`)
-- **Amazon SP-API Integration**: Retrieved 19,000+ product listings
+- **Initial Collection**: Amazon SP-API for discovering product ASINs and basic metadata
+  - Used for keyword-based product discovery across electronics categories
+- **Data Enrichment**: ScrapingDog API (paid service) for comprehensive product data scraping
+  - Customer sentiments (`sd_customer_sentiments`), prices (`sd_price`, `sd_list_price`)
+  - Ratings (`sd_average_rating`, `sd_total_reviews`, `sd_ratings_count`)
+  - Sales metrics (`sd_number_bought_past_month`)
+  - Additional product details not available via SP-API
 - **Keywords**: Electronics categories (keyboards, mice, phones, TVs, gaming, photography, etc.)
-- **Data Points**: ASINs, titles, brands, images, classifications, sales ranks
+- **Final Dataset**: `data_with_scraper.csv` - ~19,000 products with enriched features from both sources
 
 ### 2. Image Analysis (`notebooks/02-Image Analysis/`)
 - **Computer Vision Pipeline**: OpenCV-based analysis
@@ -72,18 +80,22 @@ The project demonstrates that multimodal features (visual + text + metadata) can
   - Title length, word count, average word length
   - Readability scores (Flesch Reading Ease, syllable count)
   - Keyword flags (premium, bundle, new, size indicators)
-- **Sentiment Analysis**: JSON parsing of customer sentiment data
+- **Sentiment Analysis**: JSON parsing of customer sentiment data from ScrapingDog API
+  - Extracts positive, negative, and mixed sentiment counts
+  - Sentiment character length as feature
 
 ### 4. Base Modeling (`notebooks/01-Base Model with Visuals/`)
 - **Random Forest Baseline**: Initial BSR prediction using visual features
 - **Results**: R² = 0.255, identified key image quality predictors
 
-### 5. Final Multimodal Model (`notebooks/05-Final Modeling/`)
+### 5. Final Multimodal Model (`notebooks/04-Final Modeling/`)
 - **Feature Integration**: Combined 80+ features from images, text, and metadata
+- **Data Source**: `data_with_scraper.csv` - enriched dataset with ScrapingDog data
 - **Two-Stage Pipeline**:
-  1. Classification: Predict ranking eligibility
-  2. Regression: Predict actual BSR for ranked products
+  1. Classification: Predict ranking eligibility (XGBoost Classifier)
+  2. Regression: Predict actual BSR for ranked products (XGBoost Regressor)
 - **XGBoost Models**: Optimized with hyperparameter tuning
+- **Confidence Stratification**: Analysis of prediction quality by confidence levels
 
 ---
 
@@ -114,8 +126,9 @@ The project demonstrates that multimodal features (visual + text + metadata) can
 - **Python 3.10+**
 - **Data Processing**: pandas, numpy
 - **Machine Learning**: scikit-learn, XGBoost
-- **Computer Vision**: OpenCV, YOLO
-- **NLP**: textstat, sentiment analysis
+- **Computer Vision**: OpenCV, YOLOv8 (ultralytics)
+- **NLP**: textstat, JSON parsing for sentiment
+- **Data Collection**: Amazon SP-API, ScrapingDog API (paid)
 - **Visualization**: matplotlib, seaborn
 
 ---
