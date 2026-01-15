@@ -180,7 +180,14 @@ cython_debug/
 # Ignore directories containing user credentials, local state, and settings.
 # Learn more at https://abstra.io/docs
 .abstra/
-/data
+
+# =============================================================================
+# DATA & INTELLECTUAL PROPERTY - DO NOT COMMIT
+# =============================================================================
+
+# All data directories
+/data/
+data/
 
 # ML Models and trained artifacts (IP protection)
 src/web/backend/models/*.pkl
@@ -188,6 +195,9 @@ src/web/backend/models/*.pt
 src/web/backend/models/*.onnx
 src/web/backend/models/*.joblib
 src/web/backend/models/*.h5
+src/web/backend/models/*.bin
+*.pkl
+*.joblib
 
 # Web app data (suggestions, etc)
 src/web/backend/data/*.json
@@ -195,6 +205,55 @@ src/web/backend/data/*.csv
 
 # Image uploads
 data/uploads/
+
+# Large dataset files
+*.csv
+*.parquet
+*.feather
+*.arrow
+
+# =============================================================================
+# NODE.JS / FRONTEND
+# =============================================================================
+
+# Dependencies
+node_modules/
+**/node_modules/
+src/web/frontend/node_modules/
+
+# Next.js build output
+.next/
+out/
+src/web/frontend/.next/
+src/web/frontend/out/
+
+# Package manager files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# =============================================================================
+# MISC LARGE FILES
+# =============================================================================
+
+# Binary files
+*.node
+*.dylib
+*.so
+*.dll
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Images (keep out of git)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.ico
 
 # Visual Studio Code
 #  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
