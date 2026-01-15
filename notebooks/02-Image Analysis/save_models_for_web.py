@@ -474,7 +474,10 @@ def train_regression_model(df_train, df_test, category, feature_cols):
 # ============================================================================
 
 def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
-    """Extract sample products from test set for website suggestions."""
+    """
+    Extract sample products from test set for website suggestions.
+    Includes mix of products WITH BSR (to showcase regression) and WITHOUT BSR (to showcase classification).
+    """
     suggestions = {}
     
     # Check if dataset has PCA features already
@@ -483,20 +486,46 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
     has_pca_features = len(pca_cnn_cols) > 0 and len(pca_clip_cols) > 0
     
     for category in CATEGORIES:
-        # Get products from this category that have BSR (successful products)
-        cat_products = df_test[
-            (df_test['main_bsr_group'] == category) & 
-            (df_test['has_main_bsr'] == 1)
-        ].copy()
+        # Get products from this category (both with and without BSR)
+        cat_products_all = df_test[df_test['main_bsr_group'] == category].copy()
         
-        if len(cat_products) == 0:
+        if len(cat_products_all) == 0:
             continue
         
-        # Sample products
-        samples = cat_products.sample(n=min(num_per_category, len(cat_products)), random_state=RANDOM_STATE)
+        # Split into products with BSR and without BSR
+        cat_products_with_bsr = cat_products_all[cat_products_all['has_main_bsr'] == 1].copy()
+        cat_products_no_bsr = cat_products_all[cat_products_all['has_main_bsr'] == 0].copy()
+        
+        # Sample mix: ~2/3 with BSR (for regression), ~1/3 without BSR (for classification)
+        num_with_bsr = max(1, int(num_per_category * 0.67))  # At least 1, or 67% of total
+        num_without_bsr = num_per_category - num_with_bsr  # Remaining
+        
+        samples = []
+        
+        # Sample products WITH BSR (showcase regression)
+        if len(cat_products_with_bsr) > 0:
+            with_bsr_samples = cat_products_with_bsr.sample(
+                n=min(num_with_bsr, len(cat_products_with_bsr)), 
+                random_state=RANDOM_STATE
+            )
+            samples.append(with_bsr_samples)
+        
+        # Sample products WITHOUT BSR (showcase classification)
+        if len(cat_products_no_bsr) > 0 and num_without_bsr > 0:
+            without_bsr_samples = cat_products_no_bsr.sample(
+                n=min(num_without_bsr, len(cat_products_no_bsr)), 
+                random_state=RANDOM_STATE
+            )
+            samples.append(without_bsr_samples)
+        
+        # Combine all samples
+        if len(samples) == 0:
+            continue
+        
+        all_samples = pd.concat(samples, ignore_index=True) if len(samples) > 1 else samples[0]
         
         category_suggestions = []
-        for _, row in samples.iterrows():
+        for _, row in all_samples.iterrows():
             # If PCA features exist in dataset, use them directly (no need for raw embeddings)
             cnn_pca_features = None
             clip_pca_features = None
