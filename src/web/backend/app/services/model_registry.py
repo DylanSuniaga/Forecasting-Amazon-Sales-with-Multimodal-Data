@@ -206,6 +206,7 @@ class CategoryModel:
         
         # Load classification model
         clf_path = self.models_dir / f"{cat_key}_clf.pkl"
+        print(f"  Checking for CLF model at: {clf_path}")
         if clf_path.exists():
             try:
                 with open(clf_path, 'rb') as f:
@@ -215,12 +216,15 @@ class CategoryModel:
                 self.clf_features = data.get('features', [])
                 self._clf_metrics = data.get('metrics', self._clf_metrics)
                 self.clf_loaded = True
-                print(f"  Loaded CLF model for {self.category}")
+                print(f"  ✓ Loaded CLF model for {self.category} ({len(self.clf_features)} features)")
             except Exception as e:
-                print(f"  Failed to load CLF model for {self.category}: {e}")
+                print(f"  ✗ Failed to load CLF model for {self.category}: {e}")
+        else:
+            print(f"  ✗ CLF model not found at {clf_path}")
         
         # Load regression model
         reg_path = self.models_dir / f"{cat_key}_reg.pkl"
+        print(f"  Checking for REG model at: {reg_path}")
         if reg_path.exists():
             try:
                 with open(reg_path, 'rb') as f:
@@ -230,9 +234,11 @@ class CategoryModel:
                 self.reg_features = data.get('features', [])
                 self._reg_metrics = data.get('metrics', self._reg_metrics)
                 self.reg_loaded = True
-                print(f"  Loaded REG model for {self.category}")
+                print(f"  ✓ Loaded REG model for {self.category} ({len(self.reg_features)} features)")
             except Exception as e:
-                print(f"  Failed to load REG model for {self.category}: {e}")
+                print(f"  ✗ Failed to load REG model for {self.category}: {e}")
+        else:
+            print(f"  ✗ REG model not found at {reg_path}")
     
     def predict_has_bsr(self, features: np.ndarray) -> Dict[str, Any]:
         """
@@ -329,6 +335,12 @@ class ModelRegistry:
         self._feature_pipeline: Optional[FeaturePipeline] = None
         
         print(f"ModelRegistry initialized. Models dir: {self.models_dir}")
+        print(f"  Models dir exists: {self.models_dir.exists()}")
+        if self.models_dir.exists():
+            model_files = list(self.models_dir.glob("*_clf.pkl"))
+            print(f"  Found {len(model_files)} CLF model files")
+            if len(model_files) > 0:
+                print(f"  Example: {model_files[0].name}")
         self._load_feature_pipeline()
         self._scan_models()
     

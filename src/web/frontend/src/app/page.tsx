@@ -233,6 +233,7 @@ export default function Home() {
                       title="Expected Rank Band"
                       band={evaluation.expected_rank_band}
                       percentile={getRankBandPercent(evaluation.expected_rank_band)}
+                      estimatedRank={evaluation.feature_summary.estimated_rank}
                     />
                     <ScoreCard
                       title="Competitive Intensity"
@@ -241,6 +242,19 @@ export default function Home() {
                       type="percent"
                     />
                   </div>
+                  
+                  {/* Show estimated BSR rank if regression ran (probability > 50%) */}
+                  {evaluation.bsr_entry_probability > 0.5 && evaluation.feature_summary.estimated_rank && (
+                    <div className="bento-card bg-primary/10 border border-primary/30">
+                      <p className="text-sm text-muted mb-2">Estimated BSR Rank</p>
+                      <p className="text-3xl font-bold text-primary">
+                        #{Math.round(evaluation.feature_summary.estimated_rank).toLocaleString()}
+                      </p>
+                      <p className="text-xs text-muted mt-2">
+                        Based on regression model (BSR probability: {(evaluation.bsr_entry_probability * 100).toFixed(1)}%)
+                      </p>
+                    </div>
+                  )}
 
                   {/* Signal Panel */}
                   <SignalPanel

@@ -44,6 +44,7 @@ interface RankBandCardProps {
   title: string;
   band: string;
   percentile: number;
+  estimatedRank?: number | null;
   className?: string;
 }
 
@@ -51,12 +52,18 @@ export function RankBandCard({
   title, 
   band, 
   percentile,
+  estimatedRank,
   className 
 }: RankBandCardProps) {
   return (
     <div className={cn('bento-card', className)}>
       <p className="text-sm text-muted mb-2">{title}</p>
       <p className="text-2xl font-bold text-text mb-3">{band}</p>
+      {estimatedRank && (
+        <p className="text-lg font-semibold text-primary mb-2">
+          Estimated Rank: #{Math.round(estimatedRank).toLocaleString()}
+        </p>
+      )}
       <div className="rank-band">
         <div 
           className="rank-band-fill bg-primary"

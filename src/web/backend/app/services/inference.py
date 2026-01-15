@@ -183,7 +183,7 @@ class InferenceService:
                 'images_processed': len(image_paths),
                 'clf_model_loaded': model.clf_loaded,
                 'reg_model_loaded': model.reg_loaded,
-                'is_placeholder': clf_result.get('is_placeholder', True),
+                'is_placeholder': not (model.clf_loaded and (not (bsr_probability > 0.5) or model.reg_loaded)),  # Only placeholder if CLF not loaded, or REG needed but not loaded
                 'has_bsr_prediction': has_bsr_prediction,
                 'estimated_rank': estimated_rank
             },
