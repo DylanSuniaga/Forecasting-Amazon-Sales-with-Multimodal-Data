@@ -182,6 +182,20 @@ cython_debug/
 .abstra/
 /data
 
+# ML Models and trained artifacts (IP protection)
+src/web/backend/models/*.pkl
+src/web/backend/models/*.pt
+src/web/backend/models/*.onnx
+src/web/backend/models/*.joblib
+src/web/backend/models/*.h5
+
+# Web app data (suggestions, etc)
+src/web/backend/data/*.json
+src/web/backend/data/*.csv
+
+# Image uploads
+data/uploads/
+
 # Visual Studio Code
 #  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
