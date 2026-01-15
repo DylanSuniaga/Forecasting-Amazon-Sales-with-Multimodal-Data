@@ -38,8 +38,9 @@ class FeaturePipeline:
         self.pca_clip = None
         self.cnn_cols = []
         self.clip_cols = []
-        self.top_features_clf = []
+        self.all_features_clf = []  # Changed from top_features_clf
         self.all_features_reg = []
+        self.category_medians = {}  # Category medians for image quality metrics
         self.loaded = False
         
         self._load_pipeline()
@@ -66,10 +67,14 @@ class FeaturePipeline:
             try:
                 with open(config_path, 'rb') as f:
                     data = pickle.load(f)
-                self.top_features_clf = data.get('top_features_clf', [])
+                # Support both old (top_features_clf) and new (all_features_clf) format
+                self.all_features_clf = data.get('all_features_clf', data.get('top_features_clf', []))
                 self.all_features_reg = data.get('all_features_reg', [])
+                self.category_medians = data.get('category_medians', {})
                 self.loaded = True
-                print(f"  Loaded feature config: CLF features={len(self.top_features_clf)}, REG features={len(self.all_features_reg)}")
+                print(f"  Loaded feature config: CLF features={len(self.all_features_clf)}, REG features={len(self.all_features_reg)}")
+                if self.category_medians:
+                    print(f"  Loaded category medians for {len(self.category_medians)} categories")
             except Exception as e:
                 print(f"  Failed to load feature config: {e}")
     
@@ -111,9 +116,9 @@ class FeaturePipeline:
         return pca_features
     
     def build_clf_features(self, all_features: Dict[str, float]) -> np.ndarray:
-        """Build feature vector for classification model (Top 20 features)."""
+        """Build feature vector for classification model (All features - matches notebooks)."""
         feature_vector = []
-        for feat_name in self.top_features_clf:
+        for feat_name in self.all_features_clf:
             feature_vector.append(all_features.get(feat_name, 0.0))
         return np.array(feature_vector, dtype=np.float32)
     

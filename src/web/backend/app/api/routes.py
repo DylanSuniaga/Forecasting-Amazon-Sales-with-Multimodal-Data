@@ -4,11 +4,14 @@ FastAPI routes for the Amazon Product Launch Viability API.
 import os
 import shutil
 import uuid
+import tempfile
 from pathlib import Path
 from typing import List, Optional
+import httpx
 
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Query
 from fastapi.responses import JSONResponse
+import json
 
 from ..core.config import settings
 from ..models.schemas import (
@@ -116,10 +119,19 @@ async def evaluate_product(
     description: str = Form(default="", description="Product description/bullet points"),
     category: str = Form(..., description="Main category"),
     subcategory: Optional[str] = Form(default=None, description="Subcategory"),
-    images: List[UploadFile] = File(..., description="Product images (main image first)")
+    images: List[UploadFile] = File(default=None, description="Product images (main image first)"),
+    image_url: Optional[str] = Form(default=None, description="Image URL (alternative to uploading)"),
+    cnn_embedding_json: Optional[str] = Form(default=None, description="Pre-computed CNN embedding (JSON array)"),
+    clip_embedding_json: Optional[str] = Form(default=None, description="Pre-computed CLIP embedding (JSON array)"),
+    cnn_pca_json: Optional[str] = Form(default=None, description="Pre-computed CNN PCA features (JSON object)"),
+    clip_pca_json: Optional[str] = Form(default=None, description="Pre-computed CLIP PCA features (JSON object)")
 ):
     """
     Evaluate a product's launch viability based on title, description, category, and images.
+    Supports:
+    - Uploaded images (normal flow)
+    - Image URL (for suggestion products - downloads image)
+    - Pre-computed embeddings (for suggestion products - uses embeddings from dataframe, skips extraction)
     """
     # Validate category
     if category not in settings.CATEGORIES:
@@ -128,33 +140,95 @@ async def evaluate_product(
             detail=f"Invalid category. Valid categories: {settings.CATEGORIES}"
         )
     
-    # Validate images
-    if not images:
-        raise HTTPException(status_code=400, detail="At least one image is required")
+    # Check if we have images, image_url, pre-computed embeddings, or pre-computed PCA features
+    has_uploaded_images = images and len(images) > 0 and images[0].filename
+    has_image_url = image_url and image_url.strip()
+    has_precomputed_embeddings = cnn_embedding_json and clip_embedding_json
+    has_precomputed_pca = cnn_pca_json and clip_pca_json
     
-    # Save uploaded images temporarily
+    if not has_uploaded_images and not has_image_url and not has_precomputed_embeddings and not has_precomputed_pca:
+        raise HTTPException(status_code=400, detail="Either images, image_url, pre-computed embeddings, or pre-computed PCA features are required")
+    
+    # Parse pre-computed features if provided
+    precomputed_cnn = None
+    precomputed_clip = None
+    precomputed_cnn_pca = None
+    precomputed_clip_pca = None
+    
+    if has_precomputed_pca:
+        # Use pre-computed PCA features (dataset already has PCA features)
+        try:
+            precomputed_cnn_pca = json.loads(cnn_pca_json)
+            precomputed_clip_pca = json.loads(clip_pca_json)
+            if not isinstance(precomputed_cnn_pca, dict) or not isinstance(precomputed_clip_pca, dict):
+                raise ValueError("PCA features must be JSON objects")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid PCA feature format: {str(e)}")
+    elif has_precomputed_embeddings:
+        # Use pre-computed raw embeddings (will apply PCA)
+        try:
+            precomputed_cnn = json.loads(cnn_embedding_json)
+            precomputed_clip = json.loads(clip_embedding_json)
+            if not isinstance(precomputed_cnn, list) or not isinstance(precomputed_clip, list):
+                raise ValueError("Embeddings must be JSON arrays")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid embedding format: {str(e)}")
+    
+    # Save uploaded images or download from URL
     image_paths = []
     upload_dir = settings.UPLOADS_DIR / str(uuid.uuid4())
     upload_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        for idx, image in enumerate(images):
-            # Validate file type
-            if not image.content_type or not image.content_type.startswith('image/'):
-                continue
-            
-            # Save file
-            ext = Path(image.filename).suffix if image.filename else '.jpg'
-            file_path = upload_dir / f"image_{idx}{ext}"
-            
-            with open(file_path, 'wb') as f:
-                content = await image.read()
-                f.write(content)
-            
-            image_paths.append(str(file_path))
+        if has_uploaded_images:
+            # Process uploaded images
+            for idx, image in enumerate(images):
+                # Validate file type
+                if not image.content_type or not image.content_type.startswith('image/'):
+                    continue
+                
+                # Save file
+                ext = Path(image.filename).suffix if image.filename else '.jpg'
+                file_path = upload_dir / f"image_{idx}{ext}"
+                
+                with open(file_path, 'wb') as f:
+                    content = await image.read()
+                    f.write(content)
+                
+                image_paths.append(str(file_path))
         
-        if not image_paths:
-            raise HTTPException(status_code=400, detail="No valid images uploaded")
+        elif has_image_url:
+            # Download image from URL
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(image_url, follow_redirects=True)
+                    response.raise_for_status()
+                    
+                    # Determine extension from content type or URL
+                    content_type = response.headers.get('content-type', 'image/jpeg')
+                    if 'png' in content_type:
+                        ext = '.png'
+                    elif 'webp' in content_type:
+                        ext = '.webp'
+                    else:
+                        ext = '.jpg'
+                    
+                    file_path = upload_dir / f"image_0{ext}"
+                    with open(file_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    image_paths.append(str(file_path))
+                    
+            except Exception as e:
+                print(f"Failed to download image from URL: {e}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to download image from URL: {str(e)}"
+                )
+        
+        # If using pre-computed embeddings, skip image processing
+        if not has_precomputed_embeddings and not image_paths:
+            raise HTTPException(status_code=400, detail="No valid images provided")
         
         # Run evaluation
         inference_service = get_inference_service()
@@ -163,7 +237,11 @@ async def evaluate_product(
             description=description,
             category=category,
             subcategory=subcategory,
-            image_paths=image_paths
+            image_paths=image_paths if image_paths else [],  # Empty if using pre-computed features
+            precomputed_cnn_embedding=precomputed_cnn,
+            precomputed_clip_embedding=precomputed_clip,
+            precomputed_cnn_pca=precomputed_cnn_pca,
+            precomputed_clip_pca=precomputed_clip_pca
         )
         
         return result

@@ -111,7 +111,12 @@ export default function Home() {
         data.description,
         data.category,
         data.subcategory || null,
-        data.images
+        data.images,
+        data.imageUrl, // Pass image URL for suggestion products
+        data.cnnEmbedding, // Pre-computed embeddings (for suggestions - fallback)
+        data.clipEmbedding, // Pre-computed embeddings (for suggestions - fallback)
+        data.cnnPcaFeatures, // Pre-computed PCA features (for suggestions - preferred)
+        data.clipPcaFeatures // Pre-computed PCA features (for suggestions - preferred)
       );
       
       setEvaluation(result);

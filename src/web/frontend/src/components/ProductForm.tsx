@@ -15,6 +15,10 @@ interface Suggestion {
   asin: string;
   actual_bsr: number | null;
   has_bsr: boolean;
+  cnn_embedding?: number[]; // Pre-computed embeddings from dataframe (fallback)
+  clip_embedding?: number[]; // Pre-computed embeddings from dataframe (fallback)
+  cnn_pca_features?: Record<string, number>; // Pre-computed PCA features (preferred - dataset already has PCA)
+  clip_pca_features?: Record<string, number>; // Pre-computed PCA features (preferred - dataset already has PCA)
 }
 
 interface AllSuggestions {
@@ -81,6 +85,9 @@ export function ProductForm({
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+  
+  // Track if using a suggestion (with external image URL)
+  const [selectedSuggestion, setSelectedSuggestion] = useState<Suggestion | null>(null);
 
   // Load all suggestions on mount
   useEffect(() => {
@@ -123,15 +130,36 @@ export function ProductForm({
     setFormData(prev => ({
       ...prev,
       title: suggestion.title,
-      description: suggestion.description,
+      description: suggestion.description || '',
       category: suggestion.category,
+      images: [], // Clear any uploaded images
+      imageUrl: suggestion.image_url, // Store image URL
+      cnnEmbedding: suggestion.cnn_embedding, // Pre-computed embeddings (fallback)
+      clipEmbedding: suggestion.clip_embedding, // Pre-computed embeddings (fallback)
+      cnnPcaFeatures: suggestion.cnn_pca_features, // Pre-computed PCA features (preferred)
+      clipPcaFeatures: suggestion.clip_pca_features // Pre-computed PCA features (preferred)
     }));
+    setSelectedSuggestion(suggestion);
     // Collapse suggestions after selection
     setShowSuggestions(false);
   };
 
+  // Clear the selected suggestion (go back to manual mode)
+  const clearSuggestion = () => {
+    setSelectedSuggestion(null);
+    setFormData(prev => ({
+      ...prev,
+      title: '',
+      description: '',
+      category: '',
+      subcategory: '',
+      images: []
+    }));
+    setShowSuggestions(true);
+  };
+
   // Check if form is empty (to show suggestions prominently)
-  const isFormEmpty = !formData.title && !formData.description && formData.images.length === 0;
+  const isFormEmpty = !formData.title && !formData.description && formData.images.length === 0 && !selectedSuggestion;
   
   // Categories that have suggestions
   const categoriesWithSuggestions = Object.keys(allSuggestions).filter(
@@ -140,8 +168,16 @@ export function ProductForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (formData.title && formData.category && formData.images.length > 0) {
-      onSubmit(formData);
+    // Valid if: has title + category + (has uploaded image OR has suggestion with image URL)
+    const hasImage = formData.images.length > 0 || (selectedSuggestion && selectedSuggestion.image_url);
+    if (formData.title && formData.category && hasImage) {
+      // If using suggestion, pass the image URL in a special way
+      const submitData = {
+        ...formData,
+        // Add the image URL for backend to fetch if no uploaded image
+        imageUrl: selectedSuggestion?.image_url || undefined
+      };
+      onSubmit(submitData as ProductFormData);
     }
   };
 
@@ -150,7 +186,9 @@ export function ProductForm({
     ? categories.map(c => c.name) 
     : DEFAULT_CATEGORIES;
 
-  const isValid = formData.title.trim() && formData.category && formData.images.length > 0;
+  // Valid if: has title + category + (has uploaded image OR using suggestion with image)
+  const hasImage = formData.images.length > 0 || (selectedSuggestion && selectedSuggestion.image_url);
+  const isValid = formData.title.trim() && formData.category && hasImage;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -356,20 +394,94 @@ export function ProductForm({
         </div>
       </div>
 
-      {/* Image Upload */}
+      {/* Image Upload / Suggestion Image */}
       <div>
         <label className="form-label">
           Product Image <span className="text-danger">*</span>
         </label>
-        <p className="text-xs text-muted mb-3">
-          Upload main product image (multiple images to be added later)
-        </p>
-        <ImageUpload
-          images={formData.images}
-          onChange={(images) => setFormData(prev => ({ ...prev, images }))}
-          maxImages={1}
-        />
+        
+        {selectedSuggestion && selectedSuggestion.image_url ? (
+          // Show suggestion image (read-only)
+          <div className="space-y-3">
+            <div className="p-4 bg-surface-2 rounded-lg border border-primary/30">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="w-4 h-4 text-primary" />
+                <span className="text-sm font-medium text-primary">Using example product image</span>
+              </div>
+              <div className="relative aspect-square w-32 rounded-lg overflow-hidden border border-border bg-surface">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={selectedSuggestion.image_url}
+                  alt="Product"
+                  className="w-full h-full object-contain"
+                  onError={(e) => {
+                    // Hide broken images
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <a
+                  href={selectedSuggestion.image_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-primary hover:underline flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  View full image
+                </a>
+                <span className="text-xs text-muted">•</span>
+                <button
+                  type="button"
+                  onClick={clearSuggestion}
+                  className="text-xs text-muted hover:text-danger transition-colors"
+                >
+                  Clear and upload your own
+                </button>
+              </div>
+            </div>
+            <p className="text-xs text-muted">
+              Image from Amazon product listing. Click &quot;Clear&quot; to upload your own image instead.
+            </p>
+          </div>
+        ) : (
+          // Normal image upload
+          <>
+            <p className="text-xs text-muted mb-3">
+              Upload main product image (multiple images to be added later)
+            </p>
+            <ImageUpload
+              images={formData.images}
+              onChange={(images) => setFormData(prev => ({ ...prev, images }))}
+              maxImages={1}
+            />
+          </>
+        )}
       </div>
+
+      {/* Selected Suggestion Info Banner */}
+      {selectedSuggestion && (
+        <div className="p-3 bg-success/10 border border-success/30 rounded-lg">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-success" />
+              <span className="text-sm text-success font-medium">Using example product</span>
+              {selectedSuggestion.has_bsr && selectedSuggestion.actual_bsr && (
+                <span className="text-xs bg-success/20 text-success px-2 py-0.5 rounded">
+                  Actual BSR: #{selectedSuggestion.actual_bsr.toLocaleString()}
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={clearSuggestion}
+              className="text-xs text-muted hover:text-danger transition-colors"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Submit Button */}
       <button
@@ -398,7 +510,7 @@ export function ProductForm({
         <p className="text-xs text-muted text-center">
           {!formData.title && 'Title required. '}
           {!formData.category && 'Category required. '}
-          {formData.images.length === 0 && 'At least one image required.'}
+          {!hasImage && 'Image required (upload or use example). '}
         </p>
       )}
     </form>

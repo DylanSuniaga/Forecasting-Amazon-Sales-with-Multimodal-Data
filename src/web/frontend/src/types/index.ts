@@ -103,6 +103,11 @@ export interface ProductFormData {
   category: string;
   subcategory: string;
   images: File[];
+  imageUrl?: string; // For suggestion products with external image URLs
+  cnnEmbedding?: number[]; // Pre-computed CNN embedding (for suggestions)
+  clipEmbedding?: number[]; // Pre-computed CLIP embedding (for suggestions)
+  cnnPcaFeatures?: Record<string, number>; // Pre-computed CNN PCA features (for suggestions with existing dataset)
+  clipPcaFeatures?: Record<string, number>; // Pre-computed CLIP PCA features (for suggestions with existing dataset)
 }
 
 // UI State

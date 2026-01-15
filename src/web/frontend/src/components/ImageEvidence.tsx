@@ -21,8 +21,38 @@ export function ImageEvidence({ metrics, category }: ImageEvidenceProps) {
     );
   }
 
-  // Category medians (placeholder data - would come from API)
-  const categoryMedians = {
+  // Category medians from API response (vs_category_median contains % differences)
+  // Compute actual medians from current values and % differences
+  const categoryMedians = metrics.vs_category_median ? (() => {
+    const medians: Record<string, number> = {};
+    // Reverse calculate: if vs_median = (current - median) / median * 100
+    // Then: median = current / (1 + vs_median / 100)
+    if (metrics.vs_category_median.brightness_mean !== undefined) {
+      medians.brightness_mean = metrics.brightness_mean / (1 + metrics.vs_category_median.brightness_mean / 100);
+    }
+    if (metrics.vs_category_median.contrast !== undefined) {
+      medians.contrast = metrics.contrast / (1 + metrics.vs_category_median.contrast / 100);
+    }
+    if (metrics.vs_category_median.sharpness !== undefined) {
+      medians.sharpness = metrics.sharpness / (1 + metrics.vs_category_median.sharpness / 100);
+    }
+    if (metrics.vs_category_median.white_bg_pct !== undefined) {
+      medians.white_bg_pct = metrics.white_bg_pct / (1 + metrics.vs_category_median.white_bg_pct / 100);
+    }
+    if (metrics.vs_category_median.edge_density !== undefined) {
+      medians.edge_density = metrics.edge_density / (1 + metrics.vs_category_median.edge_density / 100);
+    }
+    // Defaults if not available
+    return {
+      brightness_mean: medians.brightness_mean || 180,
+      contrast: medians.contrast || 50,
+      saturation_mean: 100,
+      sharpness: medians.sharpness || 400,
+      white_bg_pct: medians.white_bg_pct || 45,
+      edge_density: medians.edge_density || 0.12,
+    };
+  })() : {
+    // Fallback if no medians available
     brightness_mean: 180,
     contrast: 50,
     saturation_mean: 100,

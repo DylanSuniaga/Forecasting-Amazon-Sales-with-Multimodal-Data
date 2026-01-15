@@ -53,7 +53,11 @@ class InferenceService:
         description: str,
         category: str,
         subcategory: Optional[str],
-        image_paths: List[str]
+        image_paths: List[str],
+        precomputed_cnn_embedding: Optional[List[float]] = None,
+        precomputed_clip_embedding: Optional[List[float]] = None,
+        precomputed_cnn_pca: Optional[Dict[str, float]] = None,
+        precomputed_clip_pca: Optional[Dict[str, float]] = None
     ) -> EvaluationResponse:
         """
         Evaluate a product's launch viability using two-stage prediction.
@@ -70,15 +74,59 @@ class InferenceService:
         # Generate product hash
         product_hash = self._compute_product_hash(title, description, image_paths)
         
-        # Extract image features (single image)
-        image_features = self._extract_image_features(image_paths)
-        if not image_features:
-            image_features = [{}]
-        
-        primary_features = image_features[0]
-        
-        # Apply PCA to embeddings (if feature pipeline is loaded)
-        all_features = self._build_all_features(primary_features)
+        # Extract image features (single image) OR use pre-computed features
+        if precomputed_cnn_pca is not None and precomputed_clip_pca is not None:
+            # Use pre-computed PCA features directly (from suggestions with existing dataset)
+            primary_features = {
+                # Add placeholder quality/composition features (not critical for suggestions)
+                'width': 1000,
+                'height': 1000,
+                'aspect_ratio': 1.0,
+                'brightness_mean': 128,
+                'brightness_std': 50,
+                'contrast': 50,
+                'saturation_mean': 100,
+                'colorfulness': 40,
+                'sharpness': 500,
+                'blur_score': 0.01,
+                'edge_density': 0.1,
+                'white_bg_pct': 50,
+                'object_occupancy_proxy': 0.3,
+                'border_clutter_score': 0.1,
+                'bg_uniformity': 20,
+            }
+            # Build features with pre-computed PCA (skip PCA transformation)
+            all_features = self._build_all_features(primary_features, precomputed_cnn_pca=precomputed_cnn_pca, precomputed_clip_pca=precomputed_clip_pca)
+        elif precomputed_cnn_embedding is not None and precomputed_clip_embedding is not None:
+            # Use pre-computed raw embeddings (will apply PCA)
+            primary_features = {
+                'cnn_embedding': precomputed_cnn_embedding,
+                'clip_embedding': precomputed_clip_embedding,
+                # Add placeholder quality/composition features
+                'width': 1000,
+                'height': 1000,
+                'aspect_ratio': 1.0,
+                'brightness_mean': 128,
+                'brightness_std': 50,
+                'contrast': 50,
+                'saturation_mean': 100,
+                'colorfulness': 40,
+                'sharpness': 500,
+                'blur_score': 0.01,
+                'edge_density': 0.1,
+                'white_bg_pct': 50,
+                'object_occupancy_proxy': 0.3,
+                'border_clutter_score': 0.1,
+                'bg_uniformity': 20,
+            }
+            all_features = self._build_all_features(primary_features)
+        else:
+            # Extract from uploaded/downloaded image
+            image_features = self._extract_image_features(image_paths)
+            if not image_features:
+                image_features = [{}]
+            primary_features = image_features[0]
+            all_features = self._build_all_features(primary_features)
         
         # Get category model
         model = self.model_registry.get_category_model(category)
@@ -93,9 +141,9 @@ class InferenceService:
         bsr_probability = clf_result['probability']
         has_bsr_prediction = clf_result['prediction']
         
-        # Stage 2: Regression - If BSR predicted, estimate rank
+        # Stage 2: Regression - If BSR probability > 50%, estimate rank
         estimated_rank = None
-        if has_bsr_prediction == 1:
+        if bsr_probability > 0.5:  # Use probability threshold, not just prediction
             reg_result = model.predict_bsr_rank(reg_features)
             estimated_rank = reg_result['estimated_rank']
         
@@ -155,10 +203,18 @@ class InferenceService:
                 features_list.append(features)
         return features_list
     
-    def _build_all_features(self, features: Dict[str, Any]) -> Dict[str, float]:
+    def _build_all_features(
+        self, 
+        features: Dict[str, Any],
+        precomputed_cnn_pca: Optional[Dict[str, float]] = None,
+        precomputed_clip_pca: Optional[Dict[str, float]] = None
+    ) -> Dict[str, float]:
         """
         Build complete feature dictionary including PCA features.
         This converts raw image features into the format expected by models.
+        
+        If precomputed_cnn_pca and precomputed_clip_pca are provided, use them directly
+        (dataset already has PCA features, no need to apply PCA transformation).
         """
         all_features = {}
         
@@ -197,18 +253,30 @@ class InferenceService:
         }
         all_features.update(det_features)
         
-        # Apply PCA to raw embeddings
-        pipeline = self.model_registry.feature_pipeline
-        if pipeline is not None and pipeline.loaded:
-            cnn_emb = features.get('cnn_embedding')
-            clip_emb = features.get('clip_embedding')
-            pca_features = pipeline.apply_pca(cnn_emb, clip_emb)
-            all_features.update(pca_features)
+        # Use pre-computed PCA features if available (dataset already has PCA features)
+        if precomputed_cnn_pca is not None and precomputed_clip_pca is not None:
+            # Use PCA features directly from dataset (no transformation needed)
+            all_features.update(precomputed_cnn_pca)
+            all_features.update(precomputed_clip_pca)
         else:
-            # Generate placeholder PCA features
-            for i in range(128):
-                all_features[f'cnn_pca_{i:04d}'] = np.random.randn() * 0.1
-                all_features[f'clip_pca_{i:04d}'] = np.random.randn() * 0.1
+            # Apply PCA to raw embeddings (for new images)
+            pipeline = self.model_registry.feature_pipeline
+            if pipeline is not None and pipeline.loaded:
+                cnn_emb = features.get('cnn_embedding')
+                clip_emb = features.get('clip_embedding')
+                if cnn_emb is not None and clip_emb is not None:
+                    pca_features = pipeline.apply_pca(cnn_emb, clip_emb)
+                    all_features.update(pca_features)
+                else:
+                    # Generate placeholder PCA features if embeddings not available
+                    for i in range(128):
+                        all_features[f'cnn_pca_{i:04d}'] = np.random.randn() * 0.1
+                        all_features[f'clip_pca_{i:04d}'] = np.random.randn() * 0.1
+            else:
+                # Generate placeholder PCA features
+                for i in range(128):
+                    all_features[f'cnn_pca_{i:04d}'] = np.random.randn() * 0.1
+                    all_features[f'clip_pca_{i:04d}'] = np.random.randn() * 0.1
         
         # Add num_images (always 1 for web)
         all_features['num_images'] = 1.0
@@ -462,6 +530,36 @@ class InferenceService:
         features: Dict[str, Any],
         category: str
     ) -> ImageQualityMetrics:
+        """Build image quality metrics with category median comparison."""
+        # Get category medians from feature pipeline
+        pipeline = self.model_registry.feature_pipeline
+        category_medians = {}
+        if pipeline and hasattr(pipeline, 'category_medians'):
+            category_medians = pipeline.category_medians.get(category, {})
+        
+        # Map feature names to median keys (medians use _mean suffix)
+        vs_median = {}
+        if category_medians:
+            # Map current product metrics to category medians
+            metric_mapping = {
+                'brightness_mean': 'brightness_mean_mean',
+                'brightness_std': 'brightness_std_mean',
+                'contrast': 'contrast_mean',
+                'saturation_mean': 'saturation_mean_mean',
+                'colorfulness': 'colorfulness_mean',
+                'sharpness': 'sharpness_mean',
+                'white_bg_pct': 'white_bg_pct_mean',
+                'edge_density': 'edge_density_mean',
+                'aspect_ratio': 'aspect_ratio_mean'
+            }
+            
+            for metric_key, median_key in metric_mapping.items():
+                if median_key in category_medians:
+                    current_val = features.get(metric_key, 0)
+                    median_val = category_medians[median_key]
+                    if median_val > 0:
+                        vs_median[metric_key] = float((current_val - median_val) / median_val * 100)
+        
         return ImageQualityMetrics(
             width=int(features.get('width', 0)),
             height=int(features.get('height', 0)),
@@ -474,7 +572,8 @@ class InferenceService:
             sharpness=float(features.get('sharpness', 500)),
             blur_score=float(features.get('blur_score', 0.01)),
             white_bg_pct=float(features.get('white_bg_pct', 50)),
-            edge_density=float(features.get('edge_density', 0.1))
+            edge_density=float(features.get('edge_density', 0.1)),
+            vs_category_median=vs_median if vs_median else None
         )
     
     def _estimate_percentile(self, launch_score: float, category: str) -> float:

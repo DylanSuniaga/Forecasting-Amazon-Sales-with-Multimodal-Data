@@ -7,6 +7,7 @@ uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+httpx>=0.25.0  # For async HTTP requests (downloading images from URLs)
 
 # Image Processing (always required)
 opencv-python-headless>=4.8.0
