@@ -524,6 +524,11 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
         
         all_samples = pd.concat(samples, ignore_index=True) if len(samples) > 1 else samples[0]
         
+        # Log the mix for this category
+        with_bsr_count = all_samples['has_main_bsr'].sum()
+        without_bsr_count = len(all_samples) - with_bsr_count
+        print(f"    [{category}] Extracted {len(all_samples)} suggestions: {with_bsr_count} with BSR, {without_bsr_count} without BSR")
+        
         category_suggestions = []
         for _, row in all_samples.iterrows():
             # If PCA features exist in dataset, use them directly (no need for raw embeddings)
@@ -542,7 +547,7 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
             else:
                 # Extract raw embeddings (will be converted to PCA at inference time)
                 if cnn_cols:
-                    available_cnn_cols = [col for col in cnn_cols if col in cat_products.columns]
+                    available_cnn_cols = [col for col in cnn_cols if col in df_test.columns]
                     if available_cnn_cols and len(available_cnn_cols) == len(cnn_cols):
                         try:
                             cnn_vals = [float(row[col]) if pd.notna(row[col]) else 0.0 for col in cnn_cols]
@@ -551,7 +556,7 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
                             pass
                 
                 if clip_cols:
-                    available_clip_cols = [col for col in clip_cols if col in cat_products.columns]
+                    available_clip_cols = [col for col in clip_cols if col in df_test.columns]
                     if available_clip_cols and len(available_clip_cols) == len(clip_cols):
                         try:
                             clip_vals = [float(row[col]) if pd.notna(row[col]) else 0.0 for col in clip_cols]
@@ -828,15 +833,21 @@ def main():
     # =========================================================================
     # EXTRACT SAMPLE PRODUCTS
     # =========================================================================
-    print(f"\n8. Extracting sample products from test set")
+    print(f"\n8. Extracting sample products for suggestions")
     suggestions = extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=SAMPLES_PER_CATEGORY)
+    
+    # Summary of suggestions
+    total_suggestions = sum(len(s) for s in suggestions.values())
+    total_with_bsr = sum(sum(1 for p in s if p.get('has_bsr', False)) for s in suggestions.values())
+    total_without_bsr = total_suggestions - total_with_bsr
+    print(f"   Total suggestions: {total_suggestions} products")
+    print(f"   - With BSR (showcase regression): {total_with_bsr}")
+    print(f"   - Without BSR (showcase classification): {total_without_bsr}")
     
     suggestions_path = DATA_OUTPUT_DIR / "suggestions.json"
     with open(suggestions_path, 'w') as f:
         json.dump(suggestions, f, indent=2)
-    
-    total_suggestions = sum(len(v) for v in suggestions.values())
-    print(f"   Saved {total_suggestions} sample products to: {suggestions_path}")
+    print(f"   Saved suggestions to: {suggestions_path}")
     
     # =========================================================================
     # SUMMARY
