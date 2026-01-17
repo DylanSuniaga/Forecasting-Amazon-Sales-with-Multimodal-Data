@@ -41,12 +41,14 @@ class FeaturePipeline:
         self.all_features_clf = []  # Changed from top_features_clf
         self.all_features_reg = []
         self.category_medians = {}  # Category medians for image quality metrics
-        self.loaded = False
+        self.loaded = False  # Initialize loaded flag
         
         self._load_pipeline()
     
     def _load_pipeline(self):
         """Load PCA transformers and feature config."""
+        self.loaded = False
+        
         # Load PCA transformers
         pca_path = self.models_dir / "pca_transformers.pkl"
         if pca_path.exists():
@@ -59,7 +61,11 @@ class FeaturePipeline:
                 self.clip_cols = data.get('clip_cols', [])
                 print(f"  Loaded PCA transformers: CNN={self.pca_cnn is not None}, CLIP={self.pca_clip is not None}")
             except Exception as e:
-                print(f"  Failed to load PCA transformers: {e}")
+                print(f"  ✗ Failed to load PCA transformers: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"  ⚠️  PCA transformers file not found: {pca_path}")
         
         # Load feature config
         config_path = self.models_dir / "feature_config.pkl"
@@ -71,12 +77,20 @@ class FeaturePipeline:
                 self.all_features_clf = data.get('all_features_clf', data.get('top_features_clf', []))
                 self.all_features_reg = data.get('all_features_reg', [])
                 self.category_medians = data.get('category_medians', {})
-                self.loaded = True
-                print(f"  Loaded feature config: CLF features={len(self.all_features_clf)}, REG features={len(self.all_features_reg)}")
-                if self.category_medians:
-                    print(f"  Loaded category medians for {len(self.category_medians)} categories")
+                
+                if len(self.all_features_clf) > 0 and len(self.all_features_reg) > 0:
+                    self.loaded = True
+                    print(f"  ✓ Loaded feature config: CLF features={len(self.all_features_clf)}, REG features={len(self.all_features_reg)}")
+                    if self.category_medians:
+                        print(f"  ✓ Loaded category medians for {len(self.category_medians)} categories")
+                else:
+                    print(f"  ⚠️  Feature config loaded but empty: CLF={len(self.all_features_clf)}, REG={len(self.all_features_reg)}")
             except Exception as e:
-                print(f"  Failed to load feature config: {e}")
+                print(f"  ✗ Failed to load feature config: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"  ⚠️  Feature config file not found: {config_path}")
     
     def apply_pca(self, cnn_embedding: Optional[np.ndarray], clip_embedding: Optional[np.ndarray]) -> Dict[str, float]:
         """
@@ -215,12 +229,22 @@ class CategoryModel:
                 self.clf_scaler = data.get('scaler')
                 self.clf_features = data.get('features', [])
                 self._clf_metrics = data.get('metrics', self._clf_metrics)
-                self.clf_loaded = True
-                print(f"  ✓ Loaded CLF model for {self.category} ({len(self.clf_features)} features)")
+                
+                if self.clf_model is not None:
+                    self.clf_loaded = True
+                    print(f"  ✓ Loaded CLF model for {self.category} ({len(self.clf_features)} features)")
+                else:
+                    print(f"  ✗ CLF model is None in pickle file for {self.category}")
             except Exception as e:
                 print(f"  ✗ Failed to load CLF model for {self.category}: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print(f"  ✗ CLF model not found at {clf_path}")
+            # List available models for debugging
+            available = list(self.models_dir.glob("*_clf.pkl"))
+            if available:
+                print(f"    Available CLF models: {[f.name for f in available[:5]]}")
         
         # Load regression model
         reg_path = self.models_dir / f"{cat_key}_reg.pkl"
@@ -233,23 +257,46 @@ class CategoryModel:
                 self.reg_scaler = data.get('scaler')
                 self.reg_features = data.get('features', [])
                 self._reg_metrics = data.get('metrics', self._reg_metrics)
-                self.reg_loaded = True
-                print(f"  ✓ Loaded REG model for {self.category} ({len(self.reg_features)} features)")
+                
+                if self.reg_model is not None:
+                    self.reg_loaded = True
+                    print(f"  ✓ Loaded REG model for {self.category} ({len(self.reg_features)} features)")
+                else:
+                    print(f"  ✗ REG model is None in pickle file for {self.category}")
             except Exception as e:
                 print(f"  ✗ Failed to load REG model for {self.category}: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print(f"  ✗ REG model not found at {reg_path}")
+            # List available models for debugging
+            available = list(self.models_dir.glob("*_reg.pkl"))
+            if available:
+                print(f"    Available REG models: {[f.name for f in available[:5]]}")
     
     def predict_has_bsr(self, features: np.ndarray) -> Dict[str, Any]:
         """
         Predict if product will have BSR rank (classification).
         Returns probability and predicted class.
+        
+        Args:
+            features: Feature vector - must match the exact features the model was trained with
         """
         if features.ndim == 1:
             features = features.reshape(1, -1)
         
         if self.clf_loaded and self.clf_model is not None:
             try:
+                # Verify feature count matches
+                expected_features = len(self.clf_features) if self.clf_features else None
+                actual_features = features.shape[1]
+                
+                if expected_features and actual_features != expected_features:
+                    print(f"CLF feature mismatch: model expects {expected_features}, got {actual_features}")
+                    # Try to fix by using only the features the model was trained with
+                    # This shouldn't happen if feature pipeline is working correctly
+                    raise ValueError(f"Feature count mismatch: expected {expected_features}, got {actual_features}")
+                
                 if self.clf_scaler is not None:
                     features = self.clf_scaler.transform(features)
                 
@@ -264,9 +311,13 @@ class CategoryModel:
                 }
             except Exception as e:
                 print(f"CLF prediction error: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Placeholder prediction
-        base_prob = self._clf_metrics['recall'] * 0.7 + 0.15
+        # Use roc_auc if available, otherwise use default
+        base_metric = self._clf_metrics.get('roc_auc', 0.75)
+        base_prob = base_metric * 0.7 + 0.15  # Scale ROC-AUC to probability range
         noise = np.random.normal(0, 0.08)
         probability = np.clip(base_prob + noise, 0.1, 0.95)
         

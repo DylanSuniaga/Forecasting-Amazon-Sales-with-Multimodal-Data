@@ -133,8 +133,9 @@ class InferenceService:
         pipeline = self.model_registry.feature_pipeline
         
         # Build feature vectors for clf and reg
-        clf_features = self._build_clf_feature_vector(all_features, pipeline)
-        reg_features = self._build_reg_feature_vector(all_features, pipeline)
+        # Use model's stored feature lists if available (exact features model was trained with)
+        clf_features = self._build_clf_feature_vector(all_features, pipeline, model.clf_features)
+        reg_features = self._build_reg_feature_vector(all_features, pipeline, model.reg_features)
         
         # Stage 1: Classification - Has BSR?
         clf_result = model.predict_has_bsr(clf_features)
@@ -283,8 +284,23 @@ class InferenceService:
         
         return all_features
     
-    def _build_clf_feature_vector(self, all_features: Dict[str, float], pipeline) -> np.ndarray:
-        """Build feature vector for classification model (Top Features)."""
+    def _build_clf_feature_vector(self, all_features: Dict[str, float], pipeline, model_features: Optional[List[str]] = None) -> np.ndarray:
+        """
+        Build feature vector for classification model.
+        
+        Args:
+            all_features: Dictionary of all available features
+            pipeline: Feature pipeline (for fallback)
+            model_features: Exact list of features the model was trained with (preferred)
+        """
+        # Priority 1: Use model's exact feature list (most accurate)
+        if model_features and len(model_features) > 0:
+            feature_vector = []
+            for feat_name in model_features:
+                feature_vector.append(all_features.get(feat_name, 0.0))
+            return np.array(feature_vector, dtype=np.float32)
+        
+        # Priority 2: Use pipeline's feature list
         if pipeline is not None and pipeline.loaded:
             return pipeline.build_clf_features(all_features)
         
@@ -295,8 +311,23 @@ class InferenceService:
             feature_vector.append(all_features.get(feat_name, 0.0))
         return np.array(feature_vector, dtype=np.float32)
     
-    def _build_reg_feature_vector(self, all_features: Dict[str, float], pipeline) -> np.ndarray:
-        """Build feature vector for regression model (All Features)."""
+    def _build_reg_feature_vector(self, all_features: Dict[str, float], pipeline, model_features: Optional[List[str]] = None) -> np.ndarray:
+        """
+        Build feature vector for regression model.
+        
+        Args:
+            all_features: Dictionary of all available features
+            pipeline: Feature pipeline (for fallback)
+            model_features: Exact list of features the model was trained with (preferred)
+        """
+        # Priority 1: Use model's exact feature list (most accurate)
+        if model_features and len(model_features) > 0:
+            feature_vector = []
+            for feat_name in model_features:
+                feature_vector.append(all_features.get(feat_name, 0.0))
+            return np.array(feature_vector, dtype=np.float32)
+        
+        # Priority 2: Use pipeline's feature list
         if pipeline is not None and pipeline.loaded:
             return pipeline.build_reg_features(all_features)
         

@@ -107,6 +107,8 @@ EXCLUDE_COLS = [
     'fetched_at_unix',
     # BSR-related columns - CRITICAL: exclude to prevent leakage
     'main_bsr_group', 'main_bsr_rank', 'lowest_bsr_group', 'lowest_bsr_rank',
+    'has_main_bsr', 'has_lowest_bsr',  # Binary targets - CRITICAL: exclude to prevent leakage
+    'target',  # Dynamic target column created per group
     # POST-LISTING METRICS - Not available for new products!
     # Rating/Review features
     'stars', 'total_reviews', 'sd_average_rating', 'sd_total_reviews',
@@ -287,13 +289,21 @@ def prepare_classification_data(df, category, feature_cols):
     Matches notebook: includes ALL products (with and without BSR).
     """
     # For classification: products WITH this BSR group OR products WITHOUT any BSR
-    # This matches the notebook approach
-    df_cat = df[(df['main_bsr_group'] == category) | (df['has_main_bsr'] == 0)].copy()
+    # Products without BSR have main_bsr_rank as NaN (not has_main_bsr == 0)
+    # Check main_bsr_rank.isna() directly to be safe
+    df_cat = df[(df['main_bsr_group'] == category) | (df['main_bsr_rank'].isna())].copy()
     
     # Get valid features that exist in the dataframe
     valid_features = [f for f in feature_cols if f in df_cat.columns]
     X = df_cat[valid_features].copy()
-    y = df_cat['has_main_bsr'].values.astype(int)  # CRITICAL: Must be int for XGBoost classification
+    
+    # Create target variable: 1 if product has BSR in this category, 0 if no BSR
+    # CRITICAL: Must be integer (0 or 1) for XGBoost classification
+    # Product has BSR if: main_bsr_group == category AND main_bsr_rank is not NaN
+    y = ((df_cat['main_bsr_group'] == category) & (df_cat['main_bsr_rank'].notna())).astype(int).values
+    
+    # Ensure y is integer array with no NaN values
+    y = np.array(y, dtype=np.int32)
     
     X = clean_features(X, verbose=False)  # Don't print for each category
     
@@ -304,6 +314,13 @@ def prepare_classification_data(df, category, feature_cols):
     X = X[valid_idx]
     y = y[valid_idx]
     
+    # Final check: ensure y is still integer and has no NaN
+    if len(y) > 0:
+        y = np.array(y, dtype=np.int32)
+        assert y.dtype in [np.int32, np.int64, int], f"Target must be integer, got {y.dtype}"
+        assert not np.isnan(y).any(), "Target contains NaN values"
+        assert set(y) <= {0, 1}, f"Target must be binary (0/1), got unique values: {np.unique(y)}"
+    
     return X, y, valid_features
 
 
@@ -311,11 +328,11 @@ def prepare_regression_data(df, category, feature_cols):
     """
     Prepare data for regression (log BSR rank).
     Only includes products that HAVE BSR in this category.
-    Matches notebook: DROPS products without BSR (only uses has_main_bsr == 1).
+    Matches notebook: DROPS products without BSR (only uses products with main_bsr_rank not NaN).
     """
     # For regression: ONLY products that HAVE BSR in this category
-    # This matches the notebook - drops products without BSR
-    df_cat = df[(df['main_bsr_group'] == category) & (df['has_main_bsr'] == 1)].copy()
+    # Products with BSR have main_bsr_rank not NaN
+    df_cat = df[(df['main_bsr_group'] == category) & (df['main_bsr_rank'].notna())].copy()
     
     # Get valid features that exist in the dataframe
     valid_features = [f for f in feature_cols if f in df_cat.columns]
@@ -342,9 +359,8 @@ def train_classification_model(df_train, df_test, category, feature_cols):
         print(f"    [CLF] Skipping: only {len(X_train)} samples")
         return None
     
-    X_test, y_test, _ = prepare_regression_data(df_test, category, valid_features)
-    if len(X_test) == 0:
-        X_test, y_test, _ = prepare_classification_data(df_test, category, valid_features)
+    # Use classification data preparation for test set (not regression)
+    X_test, y_test, _ = prepare_classification_data(df_test, category, valid_features)
     
     # Ensure same features
     for f in valid_features:
@@ -352,7 +368,11 @@ def train_classification_model(df_train, df_test, category, feature_cols):
             X_test[f] = 0
     X_test = X_test[valid_features]
     
+    # Ensure y_test is integer
+    y_test = np.array(y_test, dtype=np.int32)
+    
     print(f"    [CLF] Train: {len(X_train)}, Test: {len(X_test)}, Features: {len(valid_features)} (after removing high-missing columns)")
+    print(f"    [CLF] Train class distribution: {np.bincount(y_train)}, Test class distribution: {np.bincount(y_test) if len(y_test) > 0 else 'N/A'}")
     
     # Scale
     scaler = StandardScaler()
@@ -369,6 +389,9 @@ def train_classification_model(df_train, df_test, category, feature_cols):
         eval_metric='logloss',
         n_jobs=-1
     )
+    
+    # Ensure y_train is integer before fitting
+    y_train = np.array(y_train, dtype=np.int32)
     model.fit(X_train_scaled, y_train)
     
     # Evaluate
@@ -381,7 +404,10 @@ def train_classification_model(df_train, df_test, category, feature_cols):
         print(f"    [CLF] Test ROC-AUC: {metrics['roc_auc']:.4f}, F1: {metrics['f1']:.4f}")
     else:
         metrics = {'roc_auc': 0.0, 'f1': 0.0}
-        print(f"    [CLF] No valid test samples")
+        if len(X_test) == 0:
+            print(f"    [CLF] No test samples")
+        else:
+            print(f"    [CLF] No valid test samples (only one class present)")
     
     return {
         'model': model,
@@ -477,6 +503,9 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
     """
     Extract sample products from test set for website suggestions.
     Includes mix of products WITH BSR (to showcase regression) and WITHOUT BSR (to showcase classification).
+    
+    For products WITHOUT BSR: Get them from the classification dataset (has_main_bsr == 0).
+    These products may not have main_bsr_group set, so we assign them to categories based on available data.
     """
     suggestions = {}
     
@@ -485,20 +514,57 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
     pca_clip_cols = sorted([c for c in df_test.columns if c.startswith('clip_pca_')])
     has_pca_features = len(pca_cnn_cols) > 0 and len(pca_clip_cols) > 0
     
+    # Get ALL products without BSR from test set (for classification showcase)
+    # Products without BSR have main_bsr_rank as NaN (not has_main_bsr == 0)
+    # Check main_bsr_rank.isna() directly to be safe
+    all_no_bsr_products = df_test[df_test['main_bsr_rank'].isna()].copy()
+    print(f"   Found {len(all_no_bsr_products)} products WITHOUT BSR in test set (main_bsr_rank is NaN)")
+    
+    # Distribute no-BSR products across categories
+    # Try to match by 'category' column first, then assign remaining products
+    no_bsr_per_category = {}
+    assigned_indices = set()
+    
+    if len(all_no_bsr_products) > 0:
+        for category in CATEGORIES:
+            # First try: match by 'category' column
+            if 'category' in all_no_bsr_products.columns:
+                matches = all_no_bsr_products[
+                    (all_no_bsr_products['category'] == category) &
+                    (~all_no_bsr_products.index.isin(assigned_indices))
+                ].copy()
+            else:
+                matches = pd.DataFrame()
+            
+            # If we don't have 3 yet, assign from remaining unassigned products
+            remaining = all_no_bsr_products[~all_no_bsr_products.index.isin(assigned_indices)].copy()
+            if len(matches) < 3 and len(remaining) > 0:
+                needed = min(3 - len(matches), len(remaining))
+                additional = remaining.head(needed)
+                matches = pd.concat([matches, additional], ignore_index=True)
+                assigned_indices.update(additional.index.tolist())
+            
+            no_bsr_per_category[category] = matches
+            if len(matches) > 0:
+                assigned_indices.update(matches.index.tolist())
+    
     for category in CATEGORIES:
-        # Get products from this category (both with and without BSR)
-        cat_products_all = df_test[df_test['main_bsr_group'] == category].copy()
+        # Get products WITH BSR from this category (for regression showcase)
+        # Products with BSR have main_bsr_rank not NaN
+        cat_products_with_bsr = df_test[
+            (df_test['main_bsr_group'] == category) & 
+            (df_test['main_bsr_rank'].notna())
+        ].copy()
         
-        if len(cat_products_all) == 0:
-            continue
+        # Get products WITHOUT BSR for this category
+        cat_products_no_bsr = no_bsr_per_category.get(category, pd.DataFrame())
         
-        # Split into products with BSR and without BSR
-        cat_products_with_bsr = cat_products_all[cat_products_all['has_main_bsr'] == 1].copy()
-        cat_products_no_bsr = cat_products_all[cat_products_all['has_main_bsr'] == 0].copy()
+        # Debug: print counts
+        print(f"    [{category}] Available: {len(cat_products_with_bsr)} with BSR, {len(cat_products_no_bsr)} without BSR")
         
-        # Sample mix: ~2/3 with BSR (for regression), ~1/3 without BSR (for classification)
+        # Sample mix: Ensure at least 1 without BSR per category if available
         num_with_bsr = max(1, int(num_per_category * 0.67))  # At least 1, or 67% of total
-        num_without_bsr = num_per_category - num_with_bsr  # Remaining
+        num_without_bsr = max(1, num_per_category - num_with_bsr)  # At least 1 without BSR
         
         samples = []
         
@@ -511,12 +577,21 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
             samples.append(with_bsr_samples)
         
         # Sample products WITHOUT BSR (showcase classification)
-        if len(cat_products_no_bsr) > 0 and num_without_bsr > 0:
-            without_bsr_samples = cat_products_no_bsr.sample(
-                n=min(num_without_bsr, len(cat_products_no_bsr)), 
-                random_state=RANDOM_STATE
-            )
-            samples.append(without_bsr_samples)
+        # CRITICAL: Always get at least 1 if available, prioritize getting 3 if possible
+        if len(cat_products_no_bsr) > 0:
+            # Adjust to ensure we get products without BSR
+            actual_with_bsr = len(samples[0]) if len(samples) > 0 else 0
+            remaining_slots = num_per_category - actual_with_bsr
+            
+            # Try to get at least 1, ideally up to 3 without BSR products
+            num_to_sample = min(3, remaining_slots, len(cat_products_no_bsr))
+            if num_to_sample > 0:
+                without_bsr_samples = cat_products_no_bsr.sample(
+                    n=num_to_sample, 
+                    random_state=RANDOM_STATE
+                )
+                samples.append(without_bsr_samples)
+                print(f"      → Sampling {num_to_sample} products WITHOUT BSR for {category}")
         
         # Combine all samples
         if len(samples) == 0:
@@ -525,7 +600,8 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
         all_samples = pd.concat(samples, ignore_index=True) if len(samples) > 1 else samples[0]
         
         # Log the mix for this category
-        with_bsr_count = all_samples['has_main_bsr'].sum()
+        # Count products with BSR (main_bsr_rank not NaN)
+        with_bsr_count = int(all_samples['main_bsr_rank'].notna().sum())
         without_bsr_count = len(all_samples) - with_bsr_count
         print(f"    [{category}] Extracted {len(all_samples)} suggestions: {with_bsr_count} with BSR, {without_bsr_count} without BSR")
         
@@ -564,14 +640,71 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
                         except (KeyError, ValueError):
                             pass
             
+            # Get has_main_bsr value - check main_bsr_rank directly (more reliable)
+            # Products without BSR have main_bsr_rank as NaN
+            main_bsr_rank_val = row.get('main_bsr_rank')
+            if pd.isna(main_bsr_rank_val):
+                has_main_bsr_val = 0  # No BSR
+            else:
+                has_main_bsr_val = 1  # Has BSR
+            
+            # Ensure it's an integer (0 or 1)
+            has_main_bsr_val = int(has_main_bsr_val)
+            
+            # Extract subcategory from dataset
+            # Try multiple possible column names for subcategory
+            subcategory = None
+            if 'subcategory' in row.index and pd.notna(row.get('subcategory')):
+                subcategory = str(row.get('subcategory')).strip()
+            elif 'sd_product_category' in row.index and pd.notna(row.get('sd_product_category')):
+                # sd_product_category might contain subcategory info
+                sd_cat = str(row.get('sd_product_category', '')).strip()
+                # If it's a hierarchical category (e.g., "Home & Kitchen > Kitchen & Dining")
+                if '>' in sd_cat:
+                    parts = sd_cat.split('>')
+                    if len(parts) > 1:
+                        subcategory = parts[-1].strip()
+                elif sd_cat and sd_cat != category:
+                    # If it's different from main category, might be subcategory
+                    subcategory = sd_cat
+            elif 'lowest_bsr_group' in row.index and pd.notna(row.get('lowest_bsr_group')):
+                # lowest_bsr_group might indicate subcategory
+                subcategory = str(row.get('lowest_bsr_group')).strip()
+            
+            # If no subcategory found, try to match from default subcategories based on category
+            # Use a simple mapping based on common patterns
+            if not subcategory or subcategory == '':
+                # Default subcategories mapping (matches config.py)
+                DEFAULT_SUBCATEGORIES_MAP = {
+                    "Home & Kitchen": ["Kitchen & Dining", "Bedding", "Bath", "Furniture", "Home Decor"],
+                    "Health & Household": ["Vitamins", "Personal Care", "Household Supplies", "Medical Supplies"],
+                    "Office Products": ["Office Electronics", "Office Furniture", "Writing Supplies", "Filing"],
+                    "Baby": ["Feeding", "Diapering", "Nursery", "Baby Care", "Strollers"],
+                    "Clothing, Shoes & Jewelry": ["Women", "Men", "Kids", "Shoes", "Jewelry"],
+                    "Kitchen & Dining": ["Cookware", "Dinnerware", "Kitchen Utensils", "Storage"],
+                    "Electronics": ["Computers", "TV & Video", "Audio", "Cameras", "Wearables"],
+                    "Cell Phones & Accessories": ["Cell Phones", "Cases", "Chargers", "Screen Protectors"],
+                    "Tools & Home Improvement": ["Power Tools", "Hand Tools", "Hardware", "Electrical"],
+                    "Video Games": ["PlayStation", "Xbox", "Nintendo", "PC Gaming", "Accessories"],
+                    "Pet Supplies": ["Dogs", "Cats", "Fish", "Birds", "Small Animals"],
+                    "Sports & Outdoors": ["Exercise", "Outdoor Recreation", "Team Sports", "Camping"],
+                    "Industrial & Scientific": ["Lab Equipment", "Safety", "Industrial Hardware", "Measuring"],
+                    "Musical Instruments": ["Guitars", "Keyboards", "Drums", "Recording", "Accessories"],
+                }
+                default_subcats = DEFAULT_SUBCATEGORIES_MAP.get(category, [])
+                if default_subcats and len(default_subcats) > 0:
+                    # Use first subcategory as default if none found
+                    subcategory = default_subcats[0]
+            
             suggestion = {
                 'title': str(row.get('title', ''))[:200],
                 'description': str(row.get('sd_feature_bullets_text', ''))[:500] if pd.notna(row.get('sd_feature_bullets_text')) else '',
                 'category': category,
+                'subcategory': subcategory if subcategory else '',  # Add subcategory
                 'image_url': str(row.get('image', '')) if pd.notna(row.get('image')) else '',
                 'asin': str(row.get('asin', '')),
                 'actual_bsr': int(row.get('main_bsr_rank', 0)) if pd.notna(row.get('main_bsr_rank')) else None,
-                'has_bsr': bool(row.get('has_main_bsr', 0)),
+                'has_bsr': bool(has_main_bsr_val),  # Should be False for NO BSR products
                 # Include pre-computed features (PCA if available, otherwise raw embeddings)
                 'cnn_embedding': cnn_emb,
                 'clip_embedding': clip_emb,
@@ -581,6 +714,18 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
             category_suggestions.append(suggestion)
         
         suggestions[category] = category_suggestions
+        
+        # Verify the has_bsr field is set correctly and log NO BSR products
+        no_bsr_count = 0
+        for sug in category_suggestions:
+            if sug['has_bsr'] is None:
+                print(f"      WARNING: has_bsr is None for product {sug.get('asin', 'unknown')}")
+            elif not sug['has_bsr']:
+                no_bsr_count += 1
+                print(f"      ✓ NO BSR product: {sug.get('title', 'Unknown')[:50]}... (ASIN: {sug.get('asin', 'N/A')})")
+        
+        if no_bsr_count > 0:
+            print(f"      → {category}: {no_bsr_count} products marked as NO BSR")
     
     return suggestions
 
@@ -728,6 +873,16 @@ def main():
     pca_cols = [c for c in all_numeric if c.startswith('cnn_pca_') or c.startswith('clip_pca_')]
     emb_cols = [c for c in all_numeric if c.startswith('cnn_emb_') or c.startswith('clip_emb_')]
     other_cols = [c for c in all_numeric if c not in pca_cols and c not in emb_cols and c not in EXCLUDE_COLS]
+    
+    # CRITICAL: Verify leakage columns are excluded
+    leakage_cols = ['has_main_bsr', 'has_lowest_bsr', 'main_bsr_group', 'main_bsr_rank', 
+                     'lowest_bsr_group', 'lowest_bsr_rank', 'target']
+    leakage_found = [c for c in leakage_cols if c in all_features_clf]
+    if leakage_found:
+        print(f"   ⚠️  CRITICAL ERROR: Leakage columns found in features: {leakage_found}")
+        raise ValueError(f"Data leakage detected! Columns {leakage_found} should be excluded but are in features.")
+    else:
+        print(f"   ✓ Leakage check passed: All target/BSR columns properly excluded")
     
     print(f"   - PCA columns: {len(pca_cols)}")
     print(f"   - Raw embedding columns (INCLUDED): {len(emb_cols)}")

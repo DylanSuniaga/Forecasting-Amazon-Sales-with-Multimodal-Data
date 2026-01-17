@@ -64,7 +64,7 @@ async def list_categories():
     
     for cat_name in settings.CATEGORIES:
         model = registry.get_category_model(cat_name)
-        metrics = model.metrics
+        metrics = model.clf_metrics  # Use clf_metrics property
         
         # Get subcategories
         subcats = settings.SUBCATEGORIES.get(cat_name, [])
@@ -373,11 +373,11 @@ async def get_validation_summary():
     
     for cat_name in settings.CATEGORIES:
         model = registry.get_category_model(cat_name)
-        metrics = model.metrics
+        metrics = model.clf_metrics  # Use clf_metrics property
         
         metrics_by_category.append(ValidationMetrics(
             category=cat_name,
-            model_type=model.model_type,
+            model_type='XGBoost',  # Fixed model type
             roc_auc=metrics.get('roc_auc', 0.85),
             f1_score=metrics.get('f1', 0.80),
             precision=metrics.get('precision', 0.78),
@@ -397,8 +397,7 @@ async def get_validation_summary():
         by_category=metrics_by_category,
         calibration_summary={
             'brier_score': 0.12,  # Placeholder
-            'calibration_error': 0.08,  # Placeholder
-            'note': 'Calibration metrics computed on held-out test set'
+            'calibration_error': 0.08  # Placeholder
         }
     )
 

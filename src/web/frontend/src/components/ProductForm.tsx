@@ -11,6 +11,7 @@ interface Suggestion {
   title: string;
   description: string;
   category: string;
+  subcategory?: string; // Subcategory from dataset
   image_url: string;
   asin: string;
   actual_bsr: number | null;
@@ -132,6 +133,7 @@ export function ProductForm({
       title: suggestion.title,
       description: suggestion.description || '',
       category: suggestion.category,
+      subcategory: suggestion.subcategory || '', // Auto-fill subcategory from dataset
       images: [], // Clear any uploaded images
       imageUrl: suggestion.image_url, // Store image URL
       cnnEmbedding: suggestion.cnn_embedding, // Pre-computed embeddings (fallback)
