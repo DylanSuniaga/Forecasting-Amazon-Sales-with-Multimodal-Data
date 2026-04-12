@@ -35,7 +35,8 @@ import warnings
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, f1_score, r2_score, mean_absolute_error
@@ -126,7 +127,17 @@ EXCLUDE_COLS = [
     # Availability (post-listing)
     'availability_quantity', 'sd_is_frequently_returned',
     # Price history (not available for new products)
-    'sd_previous_price'
+    'sd_previous_price',
+    # Text columns (raw text strings, not features - used to derive NLP features)
+    'text_title', 'text_title_clean', 'text_bullets', 'text_bullets_clean',
+    # POST-LISTING promotional decisions (removed from feature engineering for causality)
+    'has_discount', 'discount_pct',
+    # CATEGORY-RELATIVE features computed using main_bsr_group as grouping key
+    # Products without BSR get 0/raw values, creating perfect leakage for classification
+    'price_vs_category_median', 'title_length_vs_category_median', 'price_bin',
+    # A+ content flag: sd_aplus is only populated by ScrapingDog for ranked products
+    # 100% of BSR products = 1, making it a near-perfect leakage signal
+    'has_aplus_content',
 ]
 
 # Top 20 features from classification EDA (for classification models)
@@ -252,6 +263,211 @@ def apply_pca(df, cnn_cols, clip_cols, pca_cnn, pca_clip):
         for j in range(clip_pca.shape[1]):
             df[f'clip_pca_{j:04d}'] = clip_pca[:, j]
     
+    return df
+
+
+# TF-IDF / SVD configuration (matches notebook 03)
+TFIDF_MAX_FEATURES = 5000
+TFIDF_MIN_DF = 5
+TFIDF_MAX_DF = 0.95
+TFIDF_NGRAM_RANGE = (1, 2)
+SVD_N_COMPONENTS = 50
+
+
+def fit_tfidf_svd_transformers(df_train):
+    """
+    Fit TF-IDF vectorizers and TruncatedSVD on training data only.
+    Mirrors notebook 03_tfidf_features.ipynb but avoids train/test contamination.
+
+    Returns fitted transformers and category profiles.
+    """
+    import re
+
+    def clean_text(text):
+        if pd.isna(text) or not isinstance(text, str) or text.strip() == '':
+            return ''
+        text = text.lower()
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    # Build text columns from training data
+    if 'text_title_clean' in df_train.columns:
+        title_corpus = df_train['text_title_clean'].fillna('').tolist()
+    elif 'sd_title' in df_train.columns:
+        title_corpus = df_train['sd_title'].fillna(df_train.get('title', '')).fillna('').apply(clean_text).tolist()
+    else:
+        title_corpus = df_train.get('title', pd.Series([''] * len(df_train))).fillna('').apply(clean_text).tolist()
+
+    if 'text_bullets_clean' in df_train.columns:
+        bullets_corpus = df_train['text_bullets_clean'].fillna('').tolist()
+    elif 'sd_feature_bullets_text' in df_train.columns:
+        bullets_corpus = df_train['sd_feature_bullets_text'].fillna('').apply(clean_text).tolist()
+    else:
+        bullets_corpus = [''] * len(df_train)
+
+    # Fit TF-IDF vectorizers on training data only
+    print(f"  Fitting Title TF-IDF vectorizer...")
+    tfidf_title = TfidfVectorizer(
+        max_features=TFIDF_MAX_FEATURES, min_df=TFIDF_MIN_DF, max_df=TFIDF_MAX_DF,
+        ngram_range=TFIDF_NGRAM_RANGE, sublinear_tf=True, strip_accents='unicode',
+        token_pattern=r'(?u)\b\w\w+\b'
+    )
+    title_tfidf_matrix = tfidf_title.fit_transform(title_corpus)
+    print(f"    Title TF-IDF shape: {title_tfidf_matrix.shape}")
+
+    # Check if bullets corpus has any non-empty content
+    non_empty_bullets = sum(1 for b in bullets_corpus if b.strip())
+    has_bullets = non_empty_bullets >= TFIDF_MIN_DF
+
+    tfidf_bullets = None
+    bullets_tfidf_matrix = None
+    svd_bullets = None
+
+    if has_bullets:
+        print(f"  Fitting Bullets TF-IDF vectorizer... ({non_empty_bullets} non-empty docs)")
+        tfidf_bullets = TfidfVectorizer(
+            max_features=TFIDF_MAX_FEATURES, min_df=TFIDF_MIN_DF, max_df=TFIDF_MAX_DF,
+            ngram_range=TFIDF_NGRAM_RANGE, sublinear_tf=True, strip_accents='unicode',
+            token_pattern=r'(?u)\b\w\w+\b'
+        )
+        bullets_tfidf_matrix = tfidf_bullets.fit_transform(bullets_corpus)
+        print(f"    Bullets TF-IDF shape: {bullets_tfidf_matrix.shape}")
+    else:
+        print(f"  Skipping Bullets TF-IDF: no bullet text data available ({non_empty_bullets} non-empty docs)")
+
+    # Fit SVD on training TF-IDF (training data only)
+    print(f"  Fitting Title TruncatedSVD ({SVD_N_COMPONENTS} components)...")
+    svd_title = TruncatedSVD(n_components=SVD_N_COMPONENTS, random_state=42)
+    svd_title.fit(title_tfidf_matrix)
+    print(f"    Title SVD explained variance: {svd_title.explained_variance_ratio_.sum():.3f}")
+
+    if has_bullets and bullets_tfidf_matrix is not None:
+        print(f"  Fitting Bullets TruncatedSVD ({SVD_N_COMPONENTS} components)...")
+        svd_bullets = TruncatedSVD(n_components=SVD_N_COMPONENTS, random_state=42)
+        svd_bullets.fit(bullets_tfidf_matrix)
+        print(f"    Bullets SVD explained variance: {svd_bullets.explained_variance_ratio_.sum():.3f}")
+    else:
+        print(f"  Skipping Bullets TruncatedSVD (no bullets data)")
+
+    # Build category TF-IDF profiles for keyword feedback (from training data only)
+    cat_col = 'main_bsr_group' if 'main_bsr_group' in df_train.columns else 'category'
+    category_profiles = {}
+
+    for category in CATEGORIES:
+        cat_mask = df_train[cat_col] == category
+        cat_df = df_train[cat_mask & df_train['main_bsr_rank'].notna()]
+        if len(cat_df) < 10:
+            continue
+        rank_threshold = cat_df['main_bsr_rank'].quantile(0.25)
+        top_mask = cat_df['main_bsr_rank'] <= rank_threshold
+        top_indices = cat_df[top_mask].index
+        pos_indices = [df_train.index.get_loc(idx) for idx in top_indices if idx in df_train.index]
+        if len(pos_indices) < 5:
+            continue
+
+        title_avg = np.asarray(title_tfidf_matrix[pos_indices].mean(axis=0)).flatten()
+        title_prevalence = np.asarray((title_tfidf_matrix[pos_indices] > 0).astype(float).mean(axis=0)).flatten()
+
+        profile = {
+            'title_avg_tfidf': title_avg,
+            'title_prevalence': title_prevalence,
+            'n_top_products': len(pos_indices),
+            'rank_threshold': float(rank_threshold),
+        }
+
+        if bullets_tfidf_matrix is not None:
+            bullets_avg = np.asarray(bullets_tfidf_matrix[pos_indices].mean(axis=0)).flatten()
+            bullets_prevalence = np.asarray((bullets_tfidf_matrix[pos_indices] > 0).astype(float).mean(axis=0)).flatten()
+            profile['bullets_avg_tfidf'] = bullets_avg
+            profile['bullets_prevalence'] = bullets_prevalence
+
+        category_profiles[category] = profile
+
+    print(f"  Built category TF-IDF profiles for {len(category_profiles)} categories")
+
+    # Build reverse mapping
+    def build_svd_term_mapping(svd_model, vectorizer, top_n=15):
+        feature_names = vectorizer.get_feature_names_out()
+        component_terms = {}
+        for comp_idx in range(svd_model.n_components):
+            loadings = svd_model.components_[comp_idx]
+            top_indices = np.argsort(np.abs(loadings))[-top_n:][::-1]
+            component_terms[comp_idx] = [
+                {'term': feature_names[idx], 'weight': float(loadings[idx])}
+                for idx in top_indices
+            ]
+        return component_terms
+
+    tfidf_feature_names = {
+        'title_component_terms': build_svd_term_mapping(svd_title, tfidf_title),
+        'title_feature_names': list(tfidf_title.get_feature_names_out()),
+    }
+    if svd_bullets is not None and tfidf_bullets is not None:
+        tfidf_feature_names['bullets_component_terms'] = build_svd_term_mapping(svd_bullets, tfidf_bullets)
+        tfidf_feature_names['bullets_feature_names'] = list(tfidf_bullets.get_feature_names_out())
+    else:
+        tfidf_feature_names['bullets_component_terms'] = {}
+        tfidf_feature_names['bullets_feature_names'] = []
+
+    return {
+        'tfidf_title': tfidf_title,
+        'tfidf_bullets': tfidf_bullets,
+        'svd_title': svd_title,
+        'svd_bullets': svd_bullets,
+        'category_profiles': category_profiles,
+        'feature_names': tfidf_feature_names,
+    }
+
+
+def apply_tfidf_svd(df, tfidf_data):
+    """Apply fitted TF-IDF + SVD transformers to a dataframe. Returns df with new columns."""
+    import re
+
+    def clean_text(text):
+        if pd.isna(text) or not isinstance(text, str) or text.strip() == '':
+            return ''
+        text = text.lower()
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    df = df.copy()
+
+    # Get text corpora
+    if 'text_title_clean' in df.columns:
+        title_corpus = df['text_title_clean'].fillna('').tolist()
+    elif 'sd_title' in df.columns:
+        title_corpus = df['sd_title'].fillna(df.get('title', '')).fillna('').apply(clean_text).tolist()
+    else:
+        title_corpus = df.get('title', pd.Series([''] * len(df))).fillna('').apply(clean_text).tolist()
+
+    if 'text_bullets_clean' in df.columns:
+        bullets_corpus = df['text_bullets_clean'].fillna('').tolist()
+    elif 'sd_feature_bullets_text' in df.columns:
+        bullets_corpus = df['sd_feature_bullets_text'].fillna('').apply(clean_text).tolist()
+    else:
+        bullets_corpus = [''] * len(df)
+
+    # Transform through fitted TF-IDF + SVD
+    title_tfidf = tfidf_data['tfidf_title'].transform(title_corpus)
+    title_svd = tfidf_data['svd_title'].transform(title_tfidf)
+
+    for j in range(title_svd.shape[1]):
+        df[f'title_tfidf_pca_{j:04d}'] = title_svd[:, j]
+
+    if tfidf_data['tfidf_bullets'] is not None and tfidf_data['svd_bullets'] is not None:
+        bullets_tfidf = tfidf_data['tfidf_bullets'].transform(bullets_corpus)
+        bullets_svd = tfidf_data['svd_bullets'].transform(bullets_tfidf)
+        for j in range(bullets_svd.shape[1]):
+            df[f'bullets_tfidf_pca_{j:04d}'] = bullets_svd[:, j]
+    else:
+        # Keep existing bullets_tfidf_pca columns if present, otherwise fill with 0
+        existing_bullets_cols = [c for c in df.columns if c.startswith('bullets_tfidf_pca_')]
+        if not existing_bullets_cols:
+            for j in range(SVD_N_COMPONENTS):
+                df[f'bullets_tfidf_pca_{j:04d}'] = 0.0
+
     return df
 
 
@@ -696,15 +912,32 @@ def extract_sample_products(df_test, cnn_cols, clip_cols, num_per_category=3):
                     # Use first subcategory as default if none found
                     subcategory = default_subcats[0]
             
+            # Extract price (numeric) from price_string like '$69.99'
+            raw_price = row.get('price', None)
+            price_val = None
+            if pd.notna(raw_price):
+                try:
+                    price_val = float(str(raw_price).replace('$', '').replace(',', '').strip())
+                except (ValueError, TypeError):
+                    price_val = None
+
+            # Use sd_feature_bullets_text or text_bullets as description
+            desc = ''
+            for desc_col in ['sd_feature_bullets_text', 'text_bullets', 'text_bullets_clean']:
+                if pd.notna(row.get(desc_col)):
+                    desc = str(row[desc_col])[:500]
+                    break
+
             suggestion = {
                 'title': str(row.get('title', ''))[:200],
-                'description': str(row.get('sd_feature_bullets_text', ''))[:500] if pd.notna(row.get('sd_feature_bullets_text')) else '',
+                'description': desc,
                 'category': category,
                 'subcategory': subcategory if subcategory else '',  # Add subcategory
                 'image_url': str(row.get('image', '')) if pd.notna(row.get('image')) else '',
                 'asin': str(row.get('asin', '')),
                 'actual_bsr': int(row.get('main_bsr_rank', 0)) if pd.notna(row.get('main_bsr_rank')) else None,
                 'has_bsr': bool(has_main_bsr_val),  # Should be False for NO BSR products
+                'price': price_val,
                 # Include pre-computed features (PCA if available, otherwise raw embeddings)
                 'cnn_embedding': cnn_emb,
                 'clip_embedding': clip_emb,
@@ -857,7 +1090,47 @@ def main():
         print(f"   Saved PCA metadata (not needed for transformation, but tracked for compatibility)")
         
         print(f"\n4. Using existing PCA features from dataset")
-    
+
+    # =========================================================================
+    # REFIT TF-IDF / SVD ON TRAINING DATA ONLY (avoid train/test contamination)
+    # =========================================================================
+    # Notebook 03_tfidf_features fits on full dataset for exploration.
+    # Here we refit on training data only, then replace the pre-computed columns.
+    existing_tfidf_cols = [c for c in df_train.columns if c.startswith('title_tfidf_pca_') or c.startswith('bullets_tfidf_pca_')]
+    has_text_data = any(c in df_train.columns for c in ['text_title_clean', 'sd_title', 'title'])
+
+    if has_text_data:
+        print(f"\n4b. Refitting TF-IDF/SVD on training data only (causality fix)")
+        if existing_tfidf_cols:
+            print(f"   Dropping {len(existing_tfidf_cols)} pre-computed TF-IDF SVD columns (fit on full data)")
+            df_train = df_train.drop(columns=existing_tfidf_cols)
+            df_test = df_test.drop(columns=existing_tfidf_cols)
+
+        tfidf_data = fit_tfidf_svd_transformers(df_train)
+
+        # Save TF-IDF artifacts (properly fit on training data only)
+        with open(MODELS_OUTPUT_DIR / 'tfidf_title_vectorizer.pkl', 'wb') as f:
+            pickle.dump(tfidf_data['tfidf_title'], f)
+        with open(MODELS_OUTPUT_DIR / 'tfidf_bullets_vectorizer.pkl', 'wb') as f:
+            pickle.dump(tfidf_data['tfidf_bullets'], f)
+        with open(MODELS_OUTPUT_DIR / 'tfidf_title_svd.pkl', 'wb') as f:
+            pickle.dump(tfidf_data['svd_title'], f)
+        with open(MODELS_OUTPUT_DIR / 'tfidf_bullets_svd.pkl', 'wb') as f:
+            pickle.dump(tfidf_data['svd_bullets'], f)
+        with open(MODELS_OUTPUT_DIR / 'category_tfidf_profiles.pkl', 'wb') as f:
+            pickle.dump(tfidf_data['category_profiles'], f)
+        with open(MODELS_OUTPUT_DIR / 'tfidf_feature_names.pkl', 'wb') as f:
+            pickle.dump(tfidf_data['feature_names'], f)
+        print(f"   Saved 6 TF-IDF artifacts to {MODELS_OUTPUT_DIR}")
+
+        # Apply fitted transformers to both splits
+        df_train = apply_tfidf_svd(df_train, tfidf_data)
+        df_test = apply_tfidf_svd(df_test, tfidf_data)
+        new_tfidf_cols = [c for c in df_train.columns if c.startswith('title_tfidf_pca_') or c.startswith('bullets_tfidf_pca_')]
+        print(f"   Added {len(new_tfidf_cols)} TF-IDF SVD columns (fit on training data only)")
+    else:
+        print(f"\n4b. No text data found - skipping TF-IDF/SVD")
+
     # Get feature sets - use ALL features for both classification and regression
     # (per user: notebooks use all features, not just top 20)
     all_features_clf = get_all_features_for_regression(df_train)  # Same function works for both
@@ -875,8 +1148,10 @@ def main():
     other_cols = [c for c in all_numeric if c not in pca_cols and c not in emb_cols and c not in EXCLUDE_COLS]
     
     # CRITICAL: Verify leakage columns are excluded
-    leakage_cols = ['has_main_bsr', 'has_lowest_bsr', 'main_bsr_group', 'main_bsr_rank', 
-                     'lowest_bsr_group', 'lowest_bsr_rank', 'target']
+    leakage_cols = ['has_main_bsr', 'has_lowest_bsr', 'main_bsr_group', 'main_bsr_rank',
+                     'lowest_bsr_group', 'lowest_bsr_rank', 'target',
+                     'price_vs_category_median', 'title_length_vs_category_median',
+                     'price_bin', 'has_aplus_content']
     leakage_found = [c for c in leakage_cols if c in all_features_clf]
     if leakage_found:
         print(f"   ⚠️  CRITICAL ERROR: Leakage columns found in features: {leakage_found}")

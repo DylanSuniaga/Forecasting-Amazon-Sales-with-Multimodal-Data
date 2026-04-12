@@ -1,3 +1,24 @@
+// NLP Feedback types
+export interface KeywordSuggestion {
+  keyword: string;
+  prevalence: number;
+  suggestion: string;
+  source?: string;
+}
+
+export interface NLPFeedback {
+  title_score: number;
+  bullets_score: number;
+  missing_keywords: KeywordSuggestion[];
+  weak_keywords: KeywordSuggestion[];
+  title_stats: Record<string, any>;
+  bullets_stats: Record<string, any>;
+}
+
+// Wizard types
+export type WizardStep = 'category' | 'images' | 'text' | 'results';
+export type UIMode = 'wizard' | 'quick' | 'models';
+
 // API Types matching backend schemas
 
 export type RankBand = 
@@ -33,6 +54,13 @@ export interface ImageQualityMetrics {
   vs_category_median?: Record<string, number>;
 }
 
+export interface FeatureImportance {
+  feature: string;
+  display_name: string;
+  importance: number;
+  type: 'image' | 'text' | 'price';
+}
+
 export interface EvaluationResponse {
   launch_viability_score: number;
   bsr_entry_probability: number;
@@ -45,15 +73,18 @@ export interface EvaluationResponse {
   category_baseline_viability: number;
   percentile_in_category: number;
   image_quality: ImageQualityMetrics;
+  top_feature_importances?: FeatureImportance[];
   feature_summary: {
     top_features_used: number;
     embedding_dimension: number;
     images_processed: number;
     model_loaded: boolean;
     is_placeholder: boolean;
+    estimated_rank?: number;
   };
   product_hash: string;
   model_version: string;
+  nlp_feedback?: NLPFeedback;
 }
 
 export interface CategoryInfo {
@@ -74,6 +105,8 @@ export interface ValidationMetrics {
   recall: number;
   accuracy: number;
   sample_size: number;
+  reg_r2?: number;
+  reg_mae?: number;
 }
 
 export interface ModelInfo {
@@ -86,6 +119,10 @@ export interface ModelInfo {
     f1: number;
     precision: number;
     recall: number;
+  };
+  reg_metrics?: {
+    r2: number;
+    mae: number;
   };
 }
 
@@ -103,6 +140,7 @@ export interface ProductFormData {
   category: string;
   subcategory: string;
   images: File[];
+  price?: number; // Product price in USD
   imageUrl?: string; // For suggestion products with external image URLs
   cnnEmbedding?: number[]; // Pre-computed CNN embedding (for suggestions)
   clipEmbedding?: number[]; // Pre-computed CLIP embedding (for suggestions)

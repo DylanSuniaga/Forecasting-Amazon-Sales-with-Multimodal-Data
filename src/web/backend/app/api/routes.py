@@ -124,7 +124,8 @@ async def evaluate_product(
     cnn_embedding_json: Optional[str] = Form(default=None, description="Pre-computed CNN embedding (JSON array)"),
     clip_embedding_json: Optional[str] = Form(default=None, description="Pre-computed CLIP embedding (JSON array)"),
     cnn_pca_json: Optional[str] = Form(default=None, description="Pre-computed CNN PCA features (JSON object)"),
-    clip_pca_json: Optional[str] = Form(default=None, description="Pre-computed CLIP PCA features (JSON object)")
+    clip_pca_json: Optional[str] = Form(default=None, description="Pre-computed CLIP PCA features (JSON object)"),
+    price: Optional[float] = Form(default=None, description="Product price in USD")
 ):
     """
     Evaluate a product's launch viability based on title, description, category, and images.
@@ -241,7 +242,8 @@ async def evaluate_product(
             precomputed_cnn_embedding=precomputed_cnn,
             precomputed_clip_embedding=precomputed_clip,
             precomputed_cnn_pca=precomputed_cnn_pca,
-            precomputed_clip_pca=precomputed_clip_pca
+            precomputed_clip_pca=precomputed_clip_pca,
+            price=price
         )
         
         return result
@@ -346,11 +348,12 @@ async def list_models():
         models.append({
             'name': model_info['name'],
             'category': model_info['category'],
-            'model_type': 'XGBoost (CLF) + RandomForest (REG)',
+            'model_type': 'XGBoost (CLF) + LightGBM (REG)',
             'loaded': model_info['clf_loaded'],
             'clf_loaded': model_info['clf_loaded'],
             'reg_loaded': model_info['reg_loaded'],
-            'metrics': model_info['clf_metrics']
+            'metrics': model_info['clf_metrics'],
+            'reg_metrics': model_info['reg_metrics'],
         })
     
     return {
@@ -370,34 +373,43 @@ async def get_validation_summary():
     metrics_by_category = []
     total_auc = 0
     total_f1 = 0
-    
+    total_r2 = 0
+    total_mae = 0
+
     for cat_name in settings.CATEGORIES:
         model = registry.get_category_model(cat_name)
-        metrics = model.clf_metrics  # Use clf_metrics property
-        
+        clf_met = model.clf_metrics
+        reg_met = model.reg_metrics
+
         metrics_by_category.append(ValidationMetrics(
             category=cat_name,
-            model_type='XGBoost',  # Fixed model type
-            roc_auc=metrics.get('roc_auc', 0.85),
-            f1_score=metrics.get('f1', 0.80),
-            precision=metrics.get('precision', 0.78),
-            recall=metrics.get('recall', 0.82),
-            accuracy=metrics.get('accuracy', 0.80),
-            sample_size=1000  # Placeholder
+            model_type='XGBoost',
+            roc_auc=clf_met.get('roc_auc', 0.85),
+            f1_score=clf_met.get('f1', 0.80),
+            precision=clf_met.get('precision', 0.78),
+            recall=clf_met.get('recall', 0.82),
+            accuracy=clf_met.get('accuracy', 0.80),
+            sample_size=1000,
+            reg_r2=reg_met.get('r2'),
+            reg_mae=reg_met.get('mae'),
         ))
-        
-        total_auc += metrics.get('roc_auc', 0.85)
-        total_f1 += metrics.get('f1', 0.80)
-    
+
+        total_auc += clf_met.get('roc_auc', 0.85)
+        total_f1 += clf_met.get('f1', 0.80)
+        total_r2 += reg_met.get('r2', 0.0)
+        total_mae += reg_met.get('mae', 0.0)
+
     n_cats = len(settings.CATEGORIES)
-    
+
     return ValidationSummaryResponse(
         overall_auc=total_auc / n_cats if n_cats > 0 else 0.85,
         overall_f1=total_f1 / n_cats if n_cats > 0 else 0.80,
+        overall_r2=total_r2 / n_cats if n_cats > 0 else 0.0,
+        overall_mae=total_mae / n_cats if n_cats > 0 else 0.0,
         by_category=metrics_by_category,
         calibration_summary={
-            'brier_score': 0.12,  # Placeholder
-            'calibration_error': 0.08  # Placeholder
+            'brier_score': 0.12,
+            'calibration_error': 0.08
         }
     )
 

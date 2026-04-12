@@ -16,10 +16,11 @@ import numpy as np
 from ..core.config import settings
 from ..models.schemas import (
     EvaluationResponse, Signal, SignalType, RankBand,
-    ImageQualityMetrics
+    ImageQualityMetrics, NLPFeedback, KeywordSuggestion
 )
 from .image_features import get_feature_extractor
 from .model_registry import get_model_registry
+from .text_features import get_text_feature_extractor
 
 
 class InferenceService:
@@ -28,6 +29,7 @@ class InferenceService:
     def __init__(self):
         self.feature_extractor = get_feature_extractor(device=settings.DEVICE)
         self.model_registry = get_model_registry()
+        self.text_feature_extractor = get_text_feature_extractor()
         
         # Category baseline statistics
         self._category_baselines = {
@@ -57,7 +59,8 @@ class InferenceService:
         precomputed_cnn_embedding: Optional[List[float]] = None,
         precomputed_clip_embedding: Optional[List[float]] = None,
         precomputed_cnn_pca: Optional[Dict[str, float]] = None,
-        precomputed_clip_pca: Optional[Dict[str, float]] = None
+        precomputed_clip_pca: Optional[Dict[str, float]] = None,
+        price: Optional[float] = None
     ) -> EvaluationResponse:
         """
         Evaluate a product's launch viability using two-stage prediction.
@@ -128,10 +131,24 @@ class InferenceService:
             primary_features = image_features[0]
             all_features = self._build_all_features(primary_features)
         
+        # Extract text features and merge into all_features
+        text_features = self.text_feature_extractor.extract_features(title, description, category)
+        all_features.update(text_features)
+
+        # Override price features if price provided by user
+        if price is not None and price > 0:
+            all_features['log_price'] = float(np.log1p(price))
+            # Price bin logic (simplified - matches notebook 05)
+            all_features['price_bin'] = 1.0  # mid default
+            all_features['price_vs_category_median'] = 0.0
+
+        # Generate NLP feedback for the response
+        nlp_feedback_data = self.text_feature_extractor.generate_keyword_feedback(title, description, category)
+
         # Get category model
         model = self.model_registry.get_category_model(category)
         pipeline = self.model_registry.feature_pipeline
-        
+
         # Build feature vectors for clf and reg
         # Use model's stored feature lists if available (exact features model was trained with)
         clf_features = self._build_clf_feature_vector(all_features, pipeline, model.clf_features)
@@ -166,6 +183,52 @@ class InferenceService:
         # Percentile position
         percentile = self._estimate_percentile(launch_score, category)
         
+        # Build NLP feedback model if data available
+        nlp_feedback = None
+        if nlp_feedback_data is not None:
+            nlp_feedback = NLPFeedback(
+                title_score=nlp_feedback_data['title_score'],
+                bullets_score=nlp_feedback_data['bullets_score'],
+                missing_keywords=[
+                    KeywordSuggestion(**kw) for kw in nlp_feedback_data.get('missing_keywords', [])
+                ],
+                weak_keywords=[
+                    KeywordSuggestion(**kw) for kw in nlp_feedback_data.get('weak_keywords', [])
+                ],
+                title_stats=nlp_feedback_data.get('title_stats', {}),
+                bullets_stats=nlp_feedback_data.get('bullets_stats', {}),
+            )
+
+        # Add NLP-based signals
+        if nlp_feedback_data:
+            title_score = nlp_feedback_data.get('title_score', 0)
+            if title_score > 60:
+                strengths.append(Signal(
+                    type=SignalType.STRENGTH,
+                    label="Strong Title Keywords",
+                    description=f"Title matches {title_score:.0f}% of top seller keyword patterns",
+                    impact=min(title_score / 100, 0.9)
+                ))
+            elif title_score < 30 and title:
+                risks.append(Signal(
+                    type=SignalType.RISK,
+                    label="Weak Title Keywords",
+                    description=f"Title only matches {title_score:.0f}% of top seller patterns - see keyword suggestions",
+                    impact=0.6
+                ))
+
+            missing_count = len(nlp_feedback_data.get('missing_keywords', []))
+            if missing_count > 5:
+                risks.append(Signal(
+                    type=SignalType.RISK,
+                    label="Missing Key Terms",
+                    description=f"{missing_count} high-value keywords missing from your listing",
+                    impact=0.55
+                ))
+
+        # Extract top feature importances from the classification model
+        top_feature_importances = self._get_top_feature_importances(model, category)
+
         return EvaluationResponse(
             launch_viability_score=launch_score,
             bsr_entry_probability=bsr_probability,
@@ -178,15 +241,18 @@ class InferenceService:
             category_baseline_viability=baseline['bsr_rate'] * 100,
             percentile_in_category=percentile,
             image_quality=image_quality,
+            nlp_feedback=nlp_feedback,
+            top_feature_importances=top_feature_importances,
             feature_summary={
                 'top_features_used': len(settings.TOP_FEATURES),
                 'embedding_dimension': 128,
                 'images_processed': len(image_paths),
                 'clf_model_loaded': model.clf_loaded,
                 'reg_model_loaded': model.reg_loaded,
-                'is_placeholder': not (model.clf_loaded and (not (bsr_probability > 0.5) or model.reg_loaded)),  # Only placeholder if CLF not loaded, or REG needed but not loaded
+                'is_placeholder': not (model.clf_loaded and (not (bsr_probability > 0.5) or model.reg_loaded)),
                 'has_bsr_prediction': has_bsr_prediction,
-                'estimated_rank': estimated_rank
+                'estimated_rank': estimated_rank,
+                'text_features_loaded': self.text_feature_extractor.loaded,
             },
             product_hash=product_hash,
             model_version=settings.API_VERSION
@@ -607,6 +673,173 @@ class InferenceService:
             vs_category_median=vs_median if vs_median else None
         )
     
+    def _get_top_feature_importances(self, model, category: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Extract feature importances grouped into interpretable categories.
+
+        Embedding dimensions (cnn_pca_*, clip_emb_*, title_tfidf_pca_*, etc.) are
+        aggregated into groups like "Visual Patterns (CNN)" so users see meaningful
+        explanations instead of opaque feature names.
+        """
+        try:
+            if not model.clf_loaded or model.clf_model is None or not model.clf_features:
+                return None
+
+            importances = model.clf_model.feature_importances_
+            feature_names = model.clf_features
+
+            if len(importances) != len(feature_names):
+                return None
+
+            # Human-readable names for interpretable features
+            readable = {
+                'sharpness_laplacian_var_mean': 'Image Sharpness',
+                'sharpness_laplacian_var_max': 'Image Sharpness (Best)',
+                'white_bg_pct_mean': 'White Background %',
+                'contrast_mean': 'Image Contrast',
+                'brightness_mean_mean': 'Brightness',
+                'brightness_std_mean': 'Brightness Variation',
+                'edge_density_mean': 'Edge Density',
+                'colorfulness_mean': 'Colorfulness',
+                'aspect_ratio_mean': 'Aspect Ratio',
+                'border_clutter_score_mean': 'Border Clutter',
+                'det_conf_mean_mean': 'Object Detection Confidence',
+                'det_conf_max_mean': 'Best Object Detection',
+                'det_has_person_mean': 'Person in Image',
+                'det_num_objects_mean': 'Number of Objects',
+                'det_main_box_center_dist_mean': 'Subject Centering',
+                'det_main_box_area_ratio_mean': 'Subject Size',
+                'object_occupancy_proxy_mean': 'Product Coverage',
+                'saturation_mean_mean': 'Color Saturation',
+                'entropy_mean': 'Image Complexity',
+                'blur_score_mean': 'Image Blur',
+                'filesize_kb_mean': 'Image File Size',
+                'bg_uniformity_mean': 'Background Uniformity',
+                'saliency_peak_ratio_mean': 'Visual Attention Focus',
+                'saliency_center_dist_mean': 'Subject Center Distance',
+                'num_images': 'Number of Images',
+                'has_multiple_images': 'Multiple Images',
+                'num_colors': 'Color Variants',
+                'num_colors_available': 'Color Options',
+                'title_word_count': 'Title Word Count',
+                'title_char_count': 'Title Length',
+                'title_flesch_reading_ease': 'Title Readability',
+                'title_flesch_kincaid_grade': 'Title Grade Level',
+                'title_unique_word_ratio': 'Title Word Variety',
+                'title_avg_word_length': 'Title Avg Word Length',
+                'title_separator_count': 'Title Separators',
+                'title_has_brand': 'Brand in Title',
+                'title_has_size_spec': 'Size in Title',
+                'title_has_color_spec': 'Color in Title',
+                'bullets_total_word_count': 'Bullets Word Count',
+                'bullets_keyword_density': 'Bullet Keyword Density',
+                'bullets_count': 'Number of Bullets',
+                'bullets_avg_length': 'Avg Bullet Length',
+                'has_bullets': 'Has Bullet Points',
+                'log_price': 'Product Price',
+                'sd_price': 'Listed Price',
+                'sd_list_price': 'List Price',
+                'title_length_x_sharpness': 'Title Length x Sharpness',
+                'price_x_image_count': 'Price x Image Count',
+                'text_richness_x_image_count': 'Text Richness x Images',
+                'clip_cnn_cos_sim': 'Visual Embedding Alignment',
+                'exposure_clipped_high_pct_mean': 'Overexposure %',
+                'exposure_clipped_low_pct_mean': 'Underexposure %',
+                'dominant_color_count_mean': 'Dominant Colors',
+                'ocr_word_count_mean': 'Text on Image (Words)',
+                'ocr_char_count_mean': 'Text on Image (Chars)',
+                'ocr_has_claims_mean': 'Claims on Image',
+                'ocr_allcaps_ratio_mean': 'ALL-CAPS Text Ratio',
+                'text_overlay_area_proxy_mean': 'Text Overlay Area',
+            }
+
+            # Group definitions: prefix -> (group_name, display_name, type)
+            embedding_groups = {
+                'cnn_pca_': ('cnn_pca', 'Visual Patterns (CNN)', 'image'),
+                'cnn_emb_': ('cnn_emb', 'Visual Patterns (CNN)', 'image'),
+                'clip_pca_': ('clip_pca', 'Visual-Semantic Similarity (CLIP)', 'image'),
+                'clip_emb_': ('clip_emb', 'Visual-Semantic Similarity (CLIP)', 'image'),
+                'hero_cnn_emb_': ('hero_cnn', 'Main Image Visual Pattern', 'image'),
+                'hero_clip_emb_': ('hero_clip', 'Main Image Semantic Match', 'image'),
+                'title_tfidf_pca_': ('title_tfidf', 'Title Keywords (TF-IDF)', 'text'),
+                'bullets_tfidf_pca_': ('bullets_tfidf', 'Bullet Keywords (TF-IDF)', 'text'),
+            }
+
+            # Accumulate importances: grouped embeddings + individual interpretable
+            grouped = {}  # group_key -> {importance, display_name, type}
+            individual = []  # (name, importance, display_name, type)
+
+            for name, imp in zip(feature_names, importances):
+                if imp <= 0:
+                    continue
+
+                # Check if this feature belongs to an embedding group
+                matched_group = None
+                for prefix, (group_key, group_display, group_type) in embedding_groups.items():
+                    if name.startswith(prefix):
+                        matched_group = (group_key, group_display, group_type)
+                        break
+
+                if matched_group:
+                    gk, gd, gt = matched_group
+                    if gk not in grouped:
+                        grouped[gk] = {'importance': 0.0, 'display_name': gd, 'type': gt}
+                    grouped[gk]['importance'] += float(imp)
+                elif name in readable:
+                    # Interpretable feature with a human name
+                    feat_type = self._classify_feature_type(name)
+                    individual.append((name, float(imp), readable[name], feat_type))
+                else:
+                    # Hero image quality features or other unrecognized
+                    if name.startswith('hero_'):
+                        # Map hero_X to readable X equivalent
+                        base = name[5:]  # strip 'hero_'
+                        hero_display = readable.get(base + '_mean', readable.get(base, None))
+                        if hero_display:
+                            display = f"Main Image {hero_display}"
+                        else:
+                            display = f"Main Image: {base.replace('_', ' ').title()}"
+                        feat_type = 'image'
+                        individual.append((name, float(imp), display, feat_type))
+                    else:
+                        # Unknown feature — skip rather than show cryptic name
+                        pass
+
+            # Combine grouped and individual, sort by importance
+            all_items = []
+            for gk, ginfo in grouped.items():
+                all_items.append({
+                    'feature': gk,
+                    'display_name': ginfo['display_name'],
+                    'importance': round(ginfo['importance'], 4),
+                    'type': ginfo['type'],
+                })
+            for name, imp, display, ftype in individual:
+                all_items.append({
+                    'feature': name,
+                    'display_name': display,
+                    'importance': round(imp, 4),
+                    'type': ftype,
+                })
+
+            all_items.sort(key=lambda x: x['importance'], reverse=True)
+            return all_items[:10]
+
+        except Exception as e:
+            print(f"Feature importance extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    @staticmethod
+    def _classify_feature_type(name: str) -> str:
+        """Classify a feature name into a display type."""
+        if any(k in name for k in ['title_', 'bullets_', 'has_bullets']):
+            return 'text'
+        if any(k in name for k in ['price', 'log_price', 'sd_price', 'sd_list_price']):
+            return 'price'
+        return 'image'
+
     def _estimate_percentile(self, launch_score: float, category: str) -> float:
         return min(99, max(1, launch_score))
 

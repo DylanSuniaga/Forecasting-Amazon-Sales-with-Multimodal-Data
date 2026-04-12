@@ -58,6 +58,24 @@ class EvaluationRequest(BaseModel):
     # Images are uploaded separately via multipart form
 
 
+class KeywordSuggestion(BaseModel):
+    """A keyword suggestion for product text optimization."""
+    keyword: str
+    prevalence: float = Field(..., ge=0, le=1, description="Fraction of top sellers using this keyword")
+    source: str = Field(default="title", description="Where the keyword applies: title or bullets")
+    suggestion: str
+
+
+class NLPFeedback(BaseModel):
+    """NLP analysis feedback for product text."""
+    title_score: float = Field(..., ge=0, le=100, description="How well title matches top sellers 0-100")
+    bullets_score: float = Field(..., ge=0, le=100, description="How well bullets match top sellers 0-100")
+    missing_keywords: List[KeywordSuggestion] = Field(default_factory=list, description="Keywords to add")
+    weak_keywords: List[KeywordSuggestion] = Field(default_factory=list, description="Keywords to reconsider")
+    title_stats: Dict[str, Any] = Field(default_factory=dict)
+    bullets_stats: Dict[str, Any] = Field(default_factory=dict)
+
+
 class EvaluationResponse(BaseModel):
     """Response body for product evaluation."""
     # Primary scores
@@ -65,25 +83,31 @@ class EvaluationResponse(BaseModel):
     bsr_entry_probability: float = Field(..., ge=0, le=1, description="Probability of getting BSR rank")
     expected_rank_band: RankBand
     competitive_intensity: float = Field(..., ge=0, le=100, description="Category competition 0-100")
-    
+
     # Confidence
     confidence: float = Field(..., ge=0, le=1, description="Model confidence")
-    
+
     # Signal decomposition
     strengths: List[Signal]
     risks: List[Signal]
-    
+
     # Category context
     category_notes: str
     category_baseline_viability: float
     percentile_in_category: float
-    
+
     # Image quality summary
     image_quality: ImageQualityMetrics
-    
+
+    # NLP feedback (keyword suggestions and text analysis)
+    nlp_feedback: Optional[NLPFeedback] = None
+
+    # Feature importance (top features driving this prediction)
+    top_feature_importances: Optional[List[Dict[str, Any]]] = None
+
     # Feature summary (for transparency)
     feature_summary: Dict[str, Any]
-    
+
     # Metadata
     product_hash: str
     model_version: str
@@ -128,12 +152,17 @@ class ValidationMetrics(BaseModel):
     recall: float
     accuracy: float
     sample_size: int
+    # Regression metrics
+    reg_r2: Optional[float] = None
+    reg_mae: Optional[float] = None
 
 
 class ValidationSummaryResponse(BaseModel):
     """Summary of model validation metrics."""
     overall_auc: float
     overall_f1: float
+    overall_r2: Optional[float] = None
+    overall_mae: Optional[float] = None
     by_category: List[ValidationMetrics]
     calibration_summary: Dict[str, float]
 

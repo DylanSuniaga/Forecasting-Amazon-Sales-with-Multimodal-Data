@@ -61,7 +61,7 @@ export function ImageEvidence({ metrics, category }: ImageEvidenceProps) {
     edge_density: 0.12,
   };
 
-  const indicators = [
+  const indicators: QualityIndicatorProps[] = [
     {
       label: 'Resolution',
       value: `${metrics.width} × ${metrics.height}`,

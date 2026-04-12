@@ -8,7 +8,11 @@ from typing import List
 try:
     from pydantic_settings import BaseSettings
 except ImportError:
-    from pydantic import BaseSettings  # type: ignore
+    try:
+        from pydantic import BaseSettings
+    except ImportError:
+        # Fallback for Pydantic v2 without pydantic-settings installed
+        from pydantic.v1 import BaseSettings
 
 
 class Settings(BaseSettings):

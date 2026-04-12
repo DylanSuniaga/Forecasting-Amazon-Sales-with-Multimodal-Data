@@ -94,6 +94,11 @@ Some features use placeholder logic pending full model deployment.
         models = registry.list_models()
         loaded = sum(1 for m in models if m.get('clf_loaded', False))
         print(f"Model registry initialized: {loaded}/{len(models)} category models loaded")
+
+        # Initialize text feature extractor
+        from .services.text_features import get_text_feature_extractor
+        text_extractor = get_text_feature_extractor()
+        print(f"Text feature extractor initialized (loaded: {text_extractor.loaded})")
     
     return app
 

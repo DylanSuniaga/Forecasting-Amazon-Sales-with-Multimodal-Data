@@ -166,7 +166,7 @@ function ImagePreview({ file, isHero, onRemove }: ImagePreviewProps) {
       
       {/* Hero badge */}
       {isHero && (
-        <span className="absolute bottom-1 left-1 text-[10px] font-medium px-1.5 py-0.5 bg-primary text-background rounded">
+        <span className="absolute bottom-1 left-1 text-[10px] font-medium px-1.5 py-0.5 bg-primary text-white rounded">
           MAIN
         </span>
       )}

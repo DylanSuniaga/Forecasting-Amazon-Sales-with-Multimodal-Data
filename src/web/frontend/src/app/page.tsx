@@ -1,95 +1,89 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Activity, AlertCircle, Loader2 } from 'lucide-react';
-import { 
-  ScoreCard, 
-  RankBandCard, 
-  SignalPanel, 
-  Tabs, 
-  ProductForm,
-  ImageEvidence,
-  CategoryContext,
-  ModelOverview,
-  ValidationSnapshot 
-} from '@/components';
-import { 
-  checkHealth, 
-  getCategories, 
-  evaluateProduct, 
+import { useState, useEffect, useCallback } from 'react';
+import { Activity, Sparkles, ChevronDown, ChevronUp, ExternalLink, Loader2, BarChart3 } from 'lucide-react';
+import { WizardShell, QuickMode, ModelPerformanceTab, ThemeToggle } from '@/components';
+import {
+  checkHealth,
+  getCategories,
+  evaluateProduct,
   getModels,
-  getValidationSummary 
+  getSuggestions,
 } from '@/lib/api';
-import { getRankBandPercent, cn } from '@/lib/utils';
-import type { 
-  TabId, 
-  EvaluationResponse, 
-  CategoryInfo, 
+import { cn } from '@/lib/utils';
+import type {
+  EvaluationResponse,
+  CategoryInfo,
   ProductFormData,
   ModelInfo,
-  ValidationMetrics 
+  UIMode,
 } from '@/types';
-import { TABS } from '@/types';
+
+interface Suggestion {
+  title: string;
+  description: string;
+  category: string;
+  subcategory?: string;
+  image_url: string;
+  asin: string;
+  actual_bsr: number | null;
+  has_bsr: boolean;
+  price?: number | null;
+  cnn_embedding?: number[];
+  clip_embedding?: number[];
+  cnn_pca_features?: Record<string, number>;
+  clip_pca_features?: Record<string, number>;
+}
+
+interface AllSuggestions {
+  [category: string]: Suggestion[];
+}
 
 export default function Home() {
-  // State
-  const [activeTab, setActiveTab] = useState<TabId>('evaluate');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  // Data
+  // UI mode
+  const [mode, setMode] = useState<UIMode>('wizard');
+
+  // Data state
   const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
   const [categories, setCategories] = useState<CategoryInfo[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [embeddingLoaded, setEmbeddingLoaded] = useState(false);
-  const [validationMetrics, setValidationMetrics] = useState<ValidationMetrics[]>([]);
-  const [overallAuc, setOverallAuc] = useState(0);
-  const [overallF1, setOverallF1] = useState(0);
-  const [calibration, setCalibration] = useState<Record<string, number | string>>({});
-  
-  // Evaluation state
-  const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
-  // Check health and load initial data
+  // Evaluation state
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+
+  // Suggestions state
+  const [allSuggestions, setAllSuggestions] = useState<AllSuggestions>({});
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(true);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+
+  // Selected suggestion for pre-fill
+  const [selectedSuggestion, setSelectedSuggestion] = useState<Suggestion | null>(null);
+  const [initialFormData, setInitialFormData] = useState<Partial<ProductFormData> | undefined>(undefined);
+
+  // Load initial data
   useEffect(() => {
     async function loadInitialData() {
       try {
-        // Check health
         const health = await checkHealth();
         setIsHealthy(health.status === 'healthy');
 
-        // Load categories
         try {
           const catData = await getCategories();
           if (catData.categories && catData.categories.length > 0) {
             setCategories(catData.categories);
           }
         } catch (e) {
-          console.warn('Failed to load categories from API, using defaults');
+          console.warn('Failed to load categories from API');
         }
 
-        // Load models
         try {
           const modelData = await getModels();
           setModels(modelData.category_models || []);
-          setEmbeddingLoaded(modelData.embedding_model_loaded || false);
         } catch (e) {
           console.warn('Failed to load models from API');
-        }
-
-        // Load validation summary
-        try {
-          const validation = await getValidationSummary();
-          setValidationMetrics(validation.by_category || []);
-          setOverallAuc(validation.overall_auc || 0.90);
-          setOverallF1(validation.overall_f1 || 0.85);
-          setCalibration(validation.calibration_summary || {});
-        } catch (e) {
-          console.warn('Failed to load validation from API');
-          // Set default values
-          setOverallAuc(0.90);
-          setOverallF1(0.85);
         }
       } catch (err) {
         console.error('Failed to load initial data:', err);
@@ -100,11 +94,28 @@ export default function Home() {
     loadInitialData();
   }, []);
 
-  // Handle form submission
-  const handleEvaluate = async (data: ProductFormData) => {
+  // Load suggestions
+  useEffect(() => {
+    async function loadSuggestions() {
+      setLoadingSuggestions(true);
+      try {
+        const data = await getSuggestions();
+        setAllSuggestions(data.suggestions || {});
+      } catch (err) {
+        console.warn('Failed to load suggestions:', err);
+        setAllSuggestions({});
+      } finally {
+        setLoadingSuggestions(false);
+      }
+    }
+    loadSuggestions();
+  }, []);
+
+  // Handle evaluation
+  const handleEvaluate = useCallback(async (data: ProductFormData) => {
     setIsLoading(true);
     setError(null);
-    
+
     try {
       const result = await evaluateProduct(
         data.title,
@@ -112,33 +123,67 @@ export default function Home() {
         data.category,
         data.subcategory || null,
         data.images,
-        data.imageUrl, // Pass image URL for suggestion products
-        data.cnnEmbedding, // Pre-computed embeddings (for suggestions - fallback)
-        data.clipEmbedding, // Pre-computed embeddings (for suggestions - fallback)
-        data.cnnPcaFeatures, // Pre-computed PCA features (for suggestions - preferred)
-        data.clipPcaFeatures // Pre-computed PCA features (for suggestions - preferred)
+        data.imageUrl,
+        data.cnnEmbedding,
+        data.clipEmbedding,
+        data.cnnPcaFeatures,
+        data.clipPcaFeatures,
+        data.price
       );
-      
       setEvaluation(result);
-      setSelectedCategory(data.category);
-      
-      // Auto-scroll to results on mobile
-      setTimeout(() => {
-        document.getElementById('results')?.scrollIntoView({ behavior: 'smooth' });
-      }, 100);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Evaluation failed');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  // Apply suggestion
+  const applySuggestion = useCallback((suggestion: Suggestion) => {
+    setSelectedSuggestion(suggestion);
+    setInitialFormData({
+      title: suggestion.title,
+      description: suggestion.description || '',
+      category: suggestion.category,
+      subcategory: suggestion.subcategory || '',
+      images: [],
+      imageUrl: suggestion.image_url,
+      price: suggestion.price ?? undefined,
+      cnnEmbedding: suggestion.cnn_embedding,
+      clipEmbedding: suggestion.clip_embedding,
+      cnnPcaFeatures: suggestion.cnn_pca_features,
+      clipPcaFeatures: suggestion.clip_pca_features,
+    });
+    setShowSuggestions(false);
+    setEvaluation(null);
+    setError(null);
+  }, []);
+
+  // Clear suggestion
+  const clearSuggestion = useCallback(() => {
+    setSelectedSuggestion(null);
+    setInitialFormData({
+      title: '',
+      description: '',
+      category: '',
+      subcategory: '',
+      images: [],
+    });
+    setEvaluation(null);
+    setError(null);
+  }, []);
+
+  const categoriesWithSuggestions = Object.keys(allSuggestions).filter(
+    cat => allSuggestions[cat] && allSuggestions[cat].length > 0
+  );
 
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b border-border bg-surface sticky top-0 z-50">
+      <header className="border-b border-border bg-surface/80 backdrop-blur-lg sticky top-0 z-50" style={{ boxShadow: 'var(--shadow-bento)' }}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
+            {/* Left: Title */}
             <div className="flex items-center gap-3">
               <Activity className="w-6 h-6 text-primary" />
               <div>
@@ -150,170 +195,232 @@ export default function Home() {
                 </p>
               </div>
             </div>
-            
-            {/* Status indicator */}
-            <div className="flex items-center gap-2">
-              <div className={cn(
-                'w-2 h-2 rounded-full',
-                isHealthy === null ? 'bg-muted' :
-                isHealthy ? 'bg-success' : 'bg-danger'
-              )} />
-              <span className="text-xs text-muted hidden sm:block">
-                {isHealthy === null ? 'Connecting...' :
-                 isHealthy ? 'API Connected' : 'API Offline'}
-              </span>
+
+            {/* Center: Mode Toggle */}
+            <div className="flex items-center gap-1 p-1 bg-surface-2 rounded-lg">
+              <button
+                onClick={() => setMode('wizard')}
+                className={cn(
+                  'px-4 py-1.5 text-sm font-medium rounded-md transition-all',
+                  mode === 'wizard'
+                    ? 'bg-primary text-white'
+                    : 'text-muted hover:text-text'
+                )}
+              >
+                Wizard
+              </button>
+              <button
+                onClick={() => setMode('quick')}
+                className={cn(
+                  'px-4 py-1.5 text-sm font-medium rounded-md transition-all',
+                  mode === 'quick'
+                    ? 'bg-primary text-white'
+                    : 'text-muted hover:text-text'
+                )}
+              >
+                Quick
+              </button>
+              <button
+                onClick={() => setMode('models')}
+                className={cn(
+                  'px-4 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-1.5',
+                  mode === 'models'
+                    ? 'bg-primary text-white'
+                    : 'text-muted hover:text-text'
+                )}
+              >
+                <BarChart3 className="w-3.5 h-3.5" />
+                Models
+              </button>
+            </div>
+
+            {/* Right: Status + Theme */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <div className={cn(
+                  'w-2 h-2 rounded-full',
+                  isHealthy === null ? 'bg-muted' :
+                  isHealthy ? 'bg-success' : 'bg-danger'
+                )} />
+                <span className="text-xs text-muted hidden sm:block">
+                  {isHealthy === null ? 'Connecting...' :
+                   isHealthy ? 'API Connected' : 'API Offline'}
+                </span>
+              </div>
+              <ThemeToggle />
             </div>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Tabs */}
-        <div className="mb-6">
-          <Tabs tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === 'evaluate' && (
-          <div className="grid lg:grid-cols-2 gap-6">
-            {/* Left: Form */}
-            <div className="bento-card">
-              <h2 className="text-xl font-semibold text-text mb-6">
-                Product Information
-              </h2>
-              <ProductForm 
-                onSubmit={handleEvaluate}
-                isLoading={isLoading}
-                categories={categories}
-              />
-            </div>
-
-            {/* Right: Results */}
-            <div id="results" className="space-y-4">
-              {error && (
-                <div className="bento-card border-danger/50 bg-danger/10">
-                  <div className="flex items-center gap-3">
-                    <AlertCircle className="w-5 h-5 text-danger" />
-                    <p className="text-danger">{error}</p>
-                  </div>
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Suggestions Panel (hidden in models tab) */}
+        {mode !== 'models' && categoriesWithSuggestions.length > 0 && (
+          <div className={cn(
+            'mb-8 rounded-xl border overflow-hidden transition-all',
+            !evaluation
+              ? 'bg-gradient-to-br from-primary/10 to-surface-2 border-primary/30'
+              : 'bg-surface-2 border-border'
+          )}>
+            <button
+              type="button"
+              onClick={() => setShowSuggestions(!showSuggestions)}
+              className="w-full p-4 flex items-center justify-between hover:bg-surface/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  'p-2 rounded-lg',
+                  !evaluation ? 'bg-primary/20' : 'bg-surface'
+                )}>
+                  <Sparkles className={cn(
+                    'w-5 h-5',
+                    !evaluation ? 'text-primary' : 'text-muted'
+                  )} />
                 </div>
-              )}
-
-              {isLoading && !evaluation && (
-                <div className="bento-card text-center py-12">
-                  <Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-4" />
-                  <p className="text-muted">Analyzing product...</p>
-                  <p className="text-xs text-muted mt-1">
-                    Extracting features and running model inference
+                <div className="text-left">
+                  <p className={cn(
+                    'font-medium',
+                    !evaluation ? 'text-primary' : 'text-text'
+                  )}>
+                    {!evaluation ? "Don't have a product? Try these examples" : 'Example Products'}
+                  </p>
+                  <p className="text-xs text-muted">
+                    {Object.values(allSuggestions).flat().length} real products from our test set
                   </p>
                 </div>
+              </div>
+              {selectedSuggestion && (
+                <span className="text-xs text-success bg-success/10 px-2 py-1 rounded mr-3 hidden sm:block">
+                  Using: {selectedSuggestion.title.slice(0, 40)}...
+                </span>
               )}
+              {showSuggestions ? (
+                <ChevronUp className="w-5 h-5 text-muted flex-shrink-0" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-muted flex-shrink-0" />
+              )}
+            </button>
 
-              {evaluation && (
-                <>
-                  {/* Primary Scores */}
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <ScoreCard
-                      title="Launch Viability Score"
-                      value={evaluation.launch_viability_score}
-                      subtitle="Overall viability (0-100)"
-                      type="score"
-                    />
-                    <ScoreCard
-                      title="BSR Entry Probability"
-                      value={evaluation.bsr_entry_probability}
-                      subtitle="Likelihood of ranking"
-                      type="probability"
-                    />
+            {showSuggestions && (
+              <div className="border-t border-border p-4 space-y-3 max-h-[400px] overflow-y-auto">
+                {loadingSuggestions ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-muted" />
+                    <span className="ml-2 text-muted">Loading suggestions...</span>
                   </div>
+                ) : (
+                  categoriesWithSuggestions.map((category) => (
+                    <div key={category} className="rounded-lg border border-border overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedCategory(expandedCategory === category ? null : category)}
+                        className="w-full p-3 flex items-center justify-between bg-surface hover:bg-surface/80 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-text">{category}</span>
+                          <span className="text-xs text-muted bg-surface-2 px-2 py-0.5 rounded">
+                            {allSuggestions[category].length} examples
+                          </span>
+                        </div>
+                        {expandedCategory === category ? (
+                          <ChevronUp className="w-4 h-4 text-muted" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 text-muted" />
+                        )}
+                      </button>
 
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <RankBandCard
-                      title="Expected Rank Band"
-                      band={evaluation.expected_rank_band}
-                      percentile={getRankBandPercent(evaluation.expected_rank_band)}
-                      estimatedRank={evaluation.feature_summary.estimated_rank}
-                    />
-                    <ScoreCard
-                      title="Competitive Intensity"
-                      value={evaluation.competitive_intensity}
-                      subtitle="Category competition level"
-                      type="percent"
-                    />
-                  </div>
-                  
-                  {/* Show estimated BSR rank if regression ran (probability > 50%) */}
-                  {evaluation.bsr_entry_probability > 0.5 && evaluation.feature_summary.estimated_rank && (
-                    <div className="bento-card bg-primary/10 border border-primary/30">
-                      <p className="text-sm text-muted mb-2">Estimated BSR Rank</p>
-                      <p className="text-3xl font-bold text-primary">
-                        #{Math.round(evaluation.feature_summary.estimated_rank).toLocaleString()}
-                      </p>
-                      <p className="text-xs text-muted mt-2">
-                        Based on regression model (BSR probability: {(evaluation.bsr_entry_probability * 100).toFixed(1)}%)
-                      </p>
+                      {expandedCategory === category && (
+                        <div className="p-2 space-y-2 bg-background">
+                          {allSuggestions[category].map((suggestion, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => applySuggestion(suggestion)}
+                              className={cn(
+                                'w-full text-left p-3 rounded-lg border transition-all group',
+                                selectedSuggestion?.asin === suggestion.asin
+                                  ? 'bg-primary/10 border-primary/50'
+                                  : 'bg-surface border-border hover:border-primary/50 hover:bg-surface/80'
+                              )}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-sm text-text line-clamp-2 flex-1 group-hover:text-primary transition-colors">
+                                  {suggestion.title}
+                                </p>
+                                {suggestion.image_url && (
+                                  <a
+                                    href={suggestion.image_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-muted hover:text-primary"
+                                    title="View original image"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-3 mt-2">
+                                {suggestion.price != null && (
+                                  <span className="text-xs text-text bg-surface-2 px-2 py-0.5 rounded">
+                                    ${suggestion.price.toFixed(2)}
+                                  </span>
+                                )}
+                                {suggestion.has_bsr && suggestion.actual_bsr && (
+                                  <span className="text-xs text-success bg-success/10 px-2 py-0.5 rounded">
+                                    BSR: #{suggestion.actual_bsr.toLocaleString()}
+                                  </span>
+                                )}
+                                {!suggestion.has_bsr && (
+                                  <span className="text-xs text-warning bg-warning/10 px-2 py-0.5 rounded">
+                                    No BSR
+                                  </span>
+                                )}
+                                {selectedSuggestion?.asin === suggestion.asin && (
+                                  <span className="text-xs text-primary font-medium">Selected</span>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
-
-                  {/* Signal Panel */}
-                  <SignalPanel
-                    strengths={evaluation.strengths}
-                    risks={evaluation.risks}
-                    categoryNotes={evaluation.category_notes}
-                    defaultCollapsed={false}
-                  />
-
-                  {/* Metadata */}
-                  {evaluation.feature_summary.is_placeholder && (
-                    <div className="text-xs text-warning bg-warning/10 px-4 py-2 rounded-lg">
-                      Note: Using placeholder predictions. Save models from notebooks for real inference.
-                    </div>
-                  )}
-                </>
-              )}
-
-              {!evaluation && !isLoading && !error && (
-                <div className="bento-card text-center py-12">
-                  <Activity className="w-12 h-12 text-muted mx-auto mb-4" />
-                  <p className="text-muted">
-                    Fill in product details and upload images to get started
-                  </p>
-                </div>
-              )}
-            </div>
+                  ))
+                )}
+                <p className="text-xs text-muted text-center pt-2">
+                  Click a product to auto-fill the evaluation form.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
-        {activeTab === 'category' && (
-          <CategoryContext 
-            category={selectedCategory}
+        {/* Mode Content */}
+        {mode === 'wizard' ? (
+          <WizardShell
             categories={categories}
+            onEvaluate={handleEvaluate}
+            isLoading={isLoading}
             evaluation={evaluation}
+            error={error}
+            initialFormData={initialFormData}
+            suggestionImageUrl={selectedSuggestion?.image_url}
+            onClearSuggestion={clearSuggestion}
           />
-        )}
-
-        {activeTab === 'image' && (
-          <ImageEvidence 
-            metrics={evaluation?.image_quality || null}
-            category={selectedCategory || undefined}
+        ) : mode === 'quick' ? (
+          <QuickMode
+            categories={categories}
+            onEvaluate={handleEvaluate}
+            isLoading={isLoading}
+            evaluation={evaluation}
+            error={error}
+            initialFormData={initialFormData}
+            suggestionImageUrl={selectedSuggestion?.image_url}
+            onClearSuggestion={clearSuggestion}
           />
-        )}
-
-        {activeTab === 'model' && (
-          <ModelOverview 
-            models={models}
-            embeddingLoaded={embeddingLoaded}
-          />
-        )}
-
-        {activeTab === 'validation' && (
-          <ValidationSnapshot 
-            metrics={validationMetrics}
-            overallAuc={overallAuc}
-            overallF1={overallF1}
-            calibration={calibration}
-          />
+        ) : (
+          <ModelPerformanceTab onBack={() => setMode('wizard')} />
         )}
       </main>
 
@@ -326,9 +433,9 @@ export default function Home() {
             </p>
             <div className="flex items-center gap-4 text-xs text-muted">
               <span>v1.0.0</span>
-              <span>•</span>
-              <a href="/docs" className="hover:text-primary">API Docs</a>
-              <span>•</span>
+              <span>|</span>
+              <a href="/docs" className="hover:text-primary transition-colors">API Docs</a>
+              <span>|</span>
               <span>{models.length} category models</span>
             </div>
           </div>
