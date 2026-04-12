@@ -1,0 +1,10 @@
+# Ignore all model files - contains trained IP
+*.pkl
+*.pt
+*.onnx
+*.joblib
+*.h5
+*.bin
+
+# Keep this .gitignore
+!.gitignore
