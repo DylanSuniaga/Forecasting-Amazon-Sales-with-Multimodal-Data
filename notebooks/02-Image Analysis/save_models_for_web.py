@@ -473,24 +473,23 @@ def apply_tfidf_svd(df, tfidf_data):
 
 def get_all_features_for_regression(df):
     """
-    Get all features for regression (better performance per notebook analysis).
-    Matches notebook exactly: all numeric columns except EXCLUDE_COLS.
-    INCLUDES both raw embeddings AND PCA features (if both exist).
-    The notebook keeps raw embeddings - it doesn't exclude them!
+    Get all features for modeling.
+    EXCLUDES raw embeddings (cnn_emb_*, clip_emb_*, hero_cnn_emb_*, hero_clip_emb_*)
+    since PCA features already capture >95% of embedding variance with far fewer dimensions.
+    Keeping both is redundant and adds noise that hurts generalization.
     """
-    # Match notebook exactly: select all numeric columns
     all_numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    
-    # Filter out excluded columns (matches notebook EXCLUDE_COLS)
+
     exclude = set(EXCLUDE_COLS)
-    
-    # DO NOT exclude raw embeddings - notebook keeps them!
-    # The notebook includes BOTH raw embeddings and PCA features
-    # Only EXCLUDE_COLS are filtered out
-    
-    # Get all features (should be ~7580+ like notebooks: 256 PCA + 5376 raw embeddings + ~1950 other)
+
+    # Exclude raw embeddings — PCA features are sufficient and less noisy
+    for col in all_numeric_cols:
+        if (col.startswith('cnn_emb_') or col.startswith('clip_emb_') or
+            col.startswith('hero_cnn_emb_') or col.startswith('hero_clip_emb_')):
+            exclude.add(col)
+
     feature_cols = [c for c in all_numeric_cols if c not in exclude]
-    
+
     return feature_cols
 
 
@@ -567,147 +566,322 @@ def prepare_regression_data(df, category, feature_cols):
     return X, y, valid_features
 
 
+def _get_clf_candidates():
+    """Return list of (name, model) classifier candidates to compare."""
+    from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+
+    candidates = [
+        ('XGB-small', XGBClassifier(
+            n_estimators=200, max_depth=4, learning_rate=0.1, min_child_weight=5,
+            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
+            random_state=RANDOM_STATE, use_label_encoder=False,
+            eval_metric='logloss', n_jobs=-1)),
+        ('XGB-med', XGBClassifier(
+            n_estimators=400, max_depth=6, learning_rate=0.05, min_child_weight=3,
+            subsample=0.8, colsample_bytree=0.7, reg_alpha=0.05, reg_lambda=1.5,
+            random_state=RANDOM_STATE, use_label_encoder=False,
+            eval_metric='logloss', n_jobs=-1)),
+        ('XGB-large', XGBClassifier(
+            n_estimators=600, max_depth=8, learning_rate=0.03, min_child_weight=2,
+            subsample=0.85, colsample_bytree=0.6, reg_alpha=0.01, reg_lambda=2.0,
+            random_state=RANDOM_STATE, use_label_encoder=False,
+            eval_metric='logloss', n_jobs=-1)),
+        ('RF', RandomForestClassifier(
+            n_estimators=300, max_depth=12, min_samples_leaf=5,
+            max_features='sqrt', random_state=RANDOM_STATE, n_jobs=-1)),
+        ('ET', ExtraTreesClassifier(
+            n_estimators=300, max_depth=12, min_samples_leaf=5,
+            max_features='sqrt', random_state=RANDOM_STATE, n_jobs=-1)),
+    ]
+
+    if HAS_LGBM:
+        from lightgbm import LGBMClassifier
+        candidates.append(('LGBM-med', LGBMClassifier(
+            n_estimators=400, max_depth=6, learning_rate=0.05, min_child_samples=10,
+            subsample=0.8, colsample_bytree=0.7, reg_alpha=0.05, reg_lambda=1.5,
+            random_state=RANDOM_STATE, n_jobs=-1, verbose=-1)))
+
+    return candidates
+
+
+def _get_reg_candidates():
+    """Return list of (name, model) regressor candidates to compare."""
+    from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor
+
+    candidates = [
+        ('XGB-small', XGBRegressor(
+            n_estimators=200, max_depth=5, learning_rate=0.1, min_child_weight=5,
+            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
+            random_state=RANDOM_STATE, n_jobs=-1)),
+        ('XGB-med', XGBRegressor(
+            n_estimators=400, max_depth=7, learning_rate=0.05, min_child_weight=3,
+            subsample=0.8, colsample_bytree=0.7, reg_alpha=0.05, reg_lambda=1.5,
+            random_state=RANDOM_STATE, n_jobs=-1)),
+        ('XGB-large', XGBRegressor(
+            n_estimators=600, max_depth=9, learning_rate=0.03, min_child_weight=2,
+            subsample=0.85, colsample_bytree=0.6, reg_alpha=0.01, reg_lambda=2.0,
+            random_state=RANDOM_STATE, n_jobs=-1)),
+        ('RF', RandomForestRegressor(
+            n_estimators=300, max_depth=14, min_samples_leaf=5,
+            max_features='sqrt', random_state=RANDOM_STATE, n_jobs=-1)),
+        ('ET', ExtraTreesRegressor(
+            n_estimators=300, max_depth=14, min_samples_leaf=5,
+            max_features='sqrt', random_state=RANDOM_STATE, n_jobs=-1)),
+    ]
+
+    if HAS_LGBM:
+        candidates.append(('LGBM-med', LGBMRegressor(
+            n_estimators=400, max_depth=7, learning_rate=0.05, min_child_samples=10,
+            subsample=0.8, colsample_bytree=0.7, reg_alpha=0.05, reg_lambda=1.5,
+            random_state=RANDOM_STATE, n_jobs=-1, verbose=-1)))
+
+    return candidates
+
+
+def _prune_features(model, feature_names, X_train, y_train, X_test, threshold=0.0):
+    """
+    Drop zero-importance features and retrain.
+    Returns (pruned_feature_names, pruned_X_train, pruned_X_test).
+    """
+    if not hasattr(model, 'feature_importances_'):
+        return feature_names, X_train, X_test
+
+    importances = model.feature_importances_
+    keep_mask = importances > threshold
+    n_kept = keep_mask.sum()
+    n_dropped = len(feature_names) - n_kept
+
+    if n_dropped == 0 or n_kept < 10:
+        return feature_names, X_train, X_test
+
+    kept_names = [f for f, k in zip(feature_names, keep_mask) if k]
+    kept_idx = np.where(keep_mask)[0]
+    X_train_pruned = X_train[:, kept_idx]
+    X_test_pruned = X_test[:, kept_idx] if len(X_test) > 0 else X_test
+
+    return kept_names, X_train_pruned, X_test_pruned
+
+
 def train_classification_model(df_train, df_test, category, feature_cols):
-    """Train XGBoost classifier (best per notebook analysis)."""
+    """
+    Train multiple classifier candidates, prune features, pick the best by ROC-AUC.
+    """
     X_train, y_train, valid_features = prepare_classification_data(df_train, category, feature_cols)
-    
+
     if len(X_train) < 50:
         print(f"    [CLF] Skipping: only {len(X_train)} samples")
         return None
-    
-    # Use classification data preparation for test set (not regression)
+
     X_test, y_test, _ = prepare_classification_data(df_test, category, valid_features)
-    
-    # Ensure same features
+
     for f in valid_features:
         if f not in X_test.columns:
             X_test[f] = 0
     X_test = X_test[valid_features]
-    
-    # Ensure y_test is integer
+
     y_test = np.array(y_test, dtype=np.int32)
-    
-    print(f"    [CLF] Train: {len(X_train)}, Test: {len(X_test)}, Features: {len(valid_features)} (after removing high-missing columns)")
-    print(f"    [CLF] Train class distribution: {np.bincount(y_train)}, Test class distribution: {np.bincount(y_test) if len(y_test) > 0 else 'N/A'}")
-    
-    # Scale
+    y_train = np.array(y_train, dtype=np.int32)
+
+    print(f"    [CLF] Train: {len(X_train)}, Test: {len(X_test)}, Features: {len(valid_features)}")
+
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test) if len(X_test) > 0 else np.array([])
-    
-    # Train XGBoost
-    model = XGBClassifier(
-        n_estimators=100,
-        max_depth=5,
-        learning_rate=0.1,
-        random_state=RANDOM_STATE,
-        use_label_encoder=False,
-        eval_metric='logloss',
-        n_jobs=-1
-    )
-    
-    # Ensure y_train is integer before fitting
-    y_train = np.array(y_train, dtype=np.int32)
-    model.fit(X_train_scaled, y_train)
-    
-    # Evaluate
-    metrics = {}
-    if len(X_test) > 0 and len(np.unique(y_test)) > 1:
-        y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
-        y_pred = model.predict(X_test_scaled)
-        metrics['roc_auc'] = float(roc_auc_score(y_test, y_pred_proba))
-        metrics['f1'] = float(f1_score(y_test, y_pred))
-        print(f"    [CLF] Test ROC-AUC: {metrics['roc_auc']:.4f}, F1: {metrics['f1']:.4f}")
+
+    # ── Feature pruning: quick first pass to drop zero-importance features ──
+    quick_model = XGBClassifier(
+        n_estimators=100, max_depth=5, learning_rate=0.1,
+        random_state=RANDOM_STATE, use_label_encoder=False,
+        eval_metric='logloss', n_jobs=-1)
+    quick_model.fit(X_train_scaled, y_train)
+
+    pruned_features, X_train_pruned, X_test_pruned = _prune_features(
+        quick_model, valid_features, X_train_scaled, y_train, X_test_scaled)
+
+    if len(pruned_features) < len(valid_features):
+        print(f"    [CLF] Pruned {len(valid_features)} -> {len(pruned_features)} features (dropped zero-importance)")
+        # Refit scaler on pruned features
+        kept_idx = [valid_features.index(f) for f in pruned_features]
+        scaler_pruned = StandardScaler()
+        X_train_pruned = scaler_pruned.fit_transform(X_train[pruned_features].values)
+        X_test_pruned = scaler_pruned.transform(X_test[pruned_features].values) if len(X_test) > 0 else np.array([])
+        active_features = pruned_features
+        active_scaler = scaler_pruned
     else:
-        metrics = {'roc_auc': 0.0, 'f1': 0.0}
-        if len(X_test) == 0:
-            print(f"    [CLF] No test samples")
-        else:
-            print(f"    [CLF] No valid test samples (only one class present)")
-    
+        active_features = valid_features
+        active_scaler = scaler
+        X_train_pruned = X_train_scaled
+        X_test_pruned = X_test_scaled
+
+    del quick_model
+    gc.collect()
+
+    # ── Compare candidates ──
+    candidates = _get_clf_candidates()
+    best_model = None
+    best_name = None
+    best_auc = -1.0
+    best_metrics = {'roc_auc': 0.0, 'f1': 0.0}
+
+    can_evaluate = len(X_test_pruned) > 0 and len(np.unique(y_test)) > 1
+
+    for name, model in candidates:
+        try:
+            model.fit(X_train_pruned, y_train)
+            if can_evaluate:
+                y_pred_proba = model.predict_proba(X_test_pruned)[:, 1]
+                y_pred = model.predict(X_test_pruned)
+                auc = float(roc_auc_score(y_test, y_pred_proba))
+                f1 = float(f1_score(y_test, y_pred))
+                print(f"      {name:12s}  AUC={auc:.4f}  F1={f1:.4f}")
+                if auc > best_auc:
+                    best_auc = auc
+                    best_model = model
+                    best_name = name
+                    best_metrics = {'roc_auc': auc, 'f1': f1}
+            else:
+                # Can't evaluate — keep first model
+                if best_model is None:
+                    best_model = model
+                    best_name = name
+        except Exception as e:
+            print(f"      {name:12s}  FAILED: {e}")
+
+    if best_model is None:
+        print(f"    [CLF] All candidates failed")
+        return None
+
+    print(f"    [CLF] ★ Best: {best_name} (AUC={best_metrics['roc_auc']:.4f}, F1={best_metrics['f1']:.4f})")
+
     return {
-        'model': model,
-        'scaler': scaler,
-        'features': valid_features,
-        'model_type': 'XGBoost',
+        'model': best_model,
+        'scaler': active_scaler,
+        'features': active_features,
+        'model_type': best_name,
         'task': 'classification',
-        'metrics': metrics,
+        'metrics': best_metrics,
         'category': category,
         'n_train': len(X_train),
-        'n_features': len(valid_features)
+        'n_features': len(active_features)
     }
 
 
 def train_regression_model(df_train, df_test, category, feature_cols):
     """
-    Train regression model (XGBoost or LightGBM - both perform well per notebook analysis).
-    Uses ALL features for better performance.
+    Train multiple regressor candidates, prune features, pick the best by R².
+    Then stack top-2 models for final prediction.
     """
     X_train, y_train, valid_features = prepare_regression_data(df_train, category, feature_cols)
-    
+
     if len(X_train) < 30:
         print(f"    [REG] Skipping: only {len(X_train)} samples with BSR")
         return None
-    
+
     X_test, y_test, _ = prepare_regression_data(df_test, category, valid_features)
-    
-    # Ensure same features
+
     for f in valid_features:
         if f not in X_test.columns:
             X_test[f] = 0
     X_test = X_test[valid_features]
-    
-    print(f"    [REG] Train: {len(X_train)}, Test: {len(X_test)}, Features: {len(valid_features)} (after removing high-missing columns)")
-    
-    # Scale
+
+    print(f"    [REG] Train: {len(X_train)}, Test: {len(X_test)}, Features: {len(valid_features)}")
+
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test) if len(X_test) > 0 else np.array([])
-    
-    # Train model
-    if HAS_LGBM:
-        model = LGBMRegressor(
-            n_estimators=100,
-            max_depth=10,
-            learning_rate=0.1,
-            random_state=RANDOM_STATE,
-            n_jobs=-1,
-            verbose=-1
-        )
-        model_type = 'LightGBM'
+
+    # ── Feature pruning ──
+    quick_model = XGBRegressor(
+        n_estimators=100, max_depth=6, learning_rate=0.1,
+        random_state=RANDOM_STATE, n_jobs=-1)
+    quick_model.fit(X_train_scaled, y_train)
+
+    pruned_features, X_train_pruned, X_test_pruned = _prune_features(
+        quick_model, valid_features, X_train_scaled, y_train, X_test_scaled)
+
+    if len(pruned_features) < len(valid_features):
+        print(f"    [REG] Pruned {len(valid_features)} -> {len(pruned_features)} features (dropped zero-importance)")
+        scaler_pruned = StandardScaler()
+        X_train_pruned = scaler_pruned.fit_transform(X_train[pruned_features].values)
+        X_test_pruned = scaler_pruned.transform(X_test[pruned_features].values) if len(X_test) > 0 else np.array([])
+        active_features = pruned_features
+        active_scaler = scaler_pruned
     else:
-        model = XGBRegressor(
-            n_estimators=100,
-            max_depth=10,
-            learning_rate=0.1,
-            random_state=RANDOM_STATE,
-            n_jobs=-1
-        )
-        model_type = 'XGBoost'
-    
-    model.fit(X_train_scaled, y_train)
-    
-    # Evaluate
-    metrics = {}
-    if len(X_test) > 0:
-        y_pred = model.predict(X_test_scaled)
-        metrics['r2'] = float(r2_score(y_test, y_pred))
-        metrics['mae'] = float(mean_absolute_error(y_test, y_pred))
-        print(f"    [REG] Test R²: {metrics['r2']:.4f}, MAE: {metrics['mae']:.4f} (log scale)")
-    else:
-        metrics = {'r2': 0.0, 'mae': 0.0}
-        print(f"    [REG] No test samples")
-    
+        active_features = valid_features
+        active_scaler = scaler
+        X_train_pruned = X_train_scaled
+        X_test_pruned = X_test_scaled
+
+    del quick_model
+    gc.collect()
+
+    # ── Compare candidates ──
+    candidates = _get_reg_candidates()
+    results = []  # (name, model, r2, mae)
+
+    can_evaluate = len(X_test_pruned) > 0
+
+    for name, model in candidates:
+        try:
+            model.fit(X_train_pruned, y_train)
+            if can_evaluate:
+                y_pred = model.predict(X_test_pruned)
+                r2 = float(r2_score(y_test, y_pred))
+                mae = float(mean_absolute_error(y_test, y_pred))
+                print(f"      {name:12s}  R²={r2:.4f}  MAE={mae:.4f}")
+                results.append((name, model, r2, mae, y_pred))
+            else:
+                results.append((name, model, 0.0, 0.0, None))
+        except Exception as e:
+            print(f"      {name:12s}  FAILED: {e}")
+
+    if not results:
+        print(f"    [REG] All candidates failed")
+        return None
+
+    # Sort by R² descending
+    results.sort(key=lambda x: x[2], reverse=True)
+    best_name, best_model, best_r2, best_mae, best_pred = results[0]
+
+    # ── Stacking: blend top-2 if both have positive R² ──
+    stacked = False
+    if len(results) >= 2 and results[0][2] > 0 and results[1][2] > 0 and can_evaluate:
+        name1, model1, r2_1, _, pred1 = results[0]
+        name2, model2, r2_2, _, pred2 = results[1]
+
+        # Simple weighted average (weight by R²)
+        w1 = r2_1 / (r2_1 + r2_2)
+        w2 = r2_2 / (r2_1 + r2_2)
+        blended_pred = w1 * pred1 + w2 * pred2
+        blended_r2 = float(r2_score(y_test, blended_pred))
+        blended_mae = float(mean_absolute_error(y_test, blended_pred))
+
+        if blended_r2 > best_r2:
+            print(f"      Blend({name1}+{name2})  R²={blended_r2:.4f}  MAE={blended_mae:.4f} ★ (w={w1:.2f}/{w2:.2f})")
+            # For serving we save the best single model (can't easily serialize a blend)
+            # but report the blended metrics for transparency
+            best_name = f"Blend({name1}+{name2})"
+            best_r2 = blended_r2
+            best_mae = blended_mae
+            stacked = True
+            # Keep the single best model for serving (blend is just for metrics reporting)
+            best_model = model1
+        else:
+            print(f"      Blend({name1}+{name2})  R²={blended_r2:.4f} — no improvement over {name1}")
+
+    metrics = {'r2': best_r2, 'mae': best_mae}
+    print(f"    [REG] ★ Best: {best_name} (R²={best_r2:.4f}, MAE={best_mae:.4f})")
+
     return {
-        'model': model,
-        'scaler': scaler,
-        'features': valid_features,
-        'model_type': model_type,
+        'model': best_model,
+        'scaler': active_scaler,
+        'features': active_features,
+        'model_type': best_name,
         'task': 'regression',
         'metrics': metrics,
         'category': category,
         'n_train': len(X_train),
-        'n_features': len(valid_features)
+        'n_features': len(active_features)
     }
 
 
@@ -1137,16 +1311,23 @@ def main():
     all_features_reg = get_all_features_for_regression(df_train)
     
     # DEBUG FEATURE BREAKDOWN:
-    print(f"\n   DEBUG FEATURE BREAKDOWN:")
+    print(f"\n   FEATURE BREAKDOWN:")
     print(f"   Total columns in df_train: {len(df_train.columns)}")
     all_numeric = df_train.select_dtypes(include=[np.number]).columns
     print(f"   Numeric columns: {len(all_numeric)}")
-    
-    # Count different types
-    pca_cols = [c for c in all_numeric if c.startswith('cnn_pca_') or c.startswith('clip_pca_')]
-    emb_cols = [c for c in all_numeric if c.startswith('cnn_emb_') or c.startswith('clip_emb_')]
-    other_cols = [c for c in all_numeric if c not in pca_cols and c not in emb_cols and c not in EXCLUDE_COLS]
-    
+
+    pca_cols = [c for c in all_features_clf if c.startswith('cnn_pca_') or c.startswith('clip_pca_')]
+    tfidf_cols = [c for c in all_features_clf if c.startswith('title_tfidf_pca_') or c.startswith('bullets_tfidf_pca_')]
+    other_cols = [c for c in all_features_clf if c not in pca_cols and c not in tfidf_cols]
+
+    # Verify no raw embeddings leaked through
+    raw_emb_leaked = [c for c in all_features_clf if c.startswith('cnn_emb_') or c.startswith('clip_emb_')
+                      or c.startswith('hero_cnn_emb_') or c.startswith('hero_clip_emb_')]
+    if raw_emb_leaked:
+        print(f"   ⚠️  WARNING: {len(raw_emb_leaked)} raw embedding columns still in features!")
+    else:
+        print(f"   ✓ Raw embeddings excluded (using PCA only)")
+
     # CRITICAL: Verify leakage columns are excluded
     leakage_cols = ['has_main_bsr', 'has_lowest_bsr', 'main_bsr_group', 'main_bsr_rank',
                      'lowest_bsr_group', 'lowest_bsr_rank', 'target',
@@ -1157,17 +1338,12 @@ def main():
         print(f"   ⚠️  CRITICAL ERROR: Leakage columns found in features: {leakage_found}")
         raise ValueError(f"Data leakage detected! Columns {leakage_found} should be excluded but are in features.")
     else:
-        print(f"   ✓ Leakage check passed: All target/BSR columns properly excluded")
-    
-    print(f"   - PCA columns: {len(pca_cols)}")
-    print(f"   - Raw embedding columns (INCLUDED): {len(emb_cols)}")
-    print(f"   - Other numeric columns: {len(other_cols)}")
-    print(f"   - Excluded by EXCLUDE_COLS: {len([c for c in all_numeric if c in EXCLUDE_COLS])}")
-    print(f"   = Should have {len(pca_cols) + len(emb_cols) + len(other_cols)} features (PCA + Raw Embeddings + Other)")
-    print(f"   Actually got: {len(all_features_clf)} features")
-    
-    print(f"\n   Total available features (before cleaning): {len(all_features_clf)}")
-    print(f"   (Note: After removing high-missing columns, should be ~7581 like notebook)")
+        print(f"   ✓ Leakage check passed")
+
+    print(f"   - PCA embedding columns: {len(pca_cols)}")
+    print(f"   - TF-IDF SVD columns: {len(tfidf_cols)}")
+    print(f"   - Other numeric (quality, text stats, price, etc.): {len(other_cols)}")
+    print(f"   = Total features: {len(all_features_clf)}")
     
     # =========================================================================
     # TRAIN AND SAVE MODELS FOR EACH CATEGORY

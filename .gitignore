@@ -11,6 +11,8 @@ __pycache__/
 build/
 CLAUDE.md
 develop-eggs/
+CLAUDE.md
+.claude/
 dist/
 downloads/
 eggs/

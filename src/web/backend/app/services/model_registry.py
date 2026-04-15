@@ -163,6 +163,10 @@ class CategoryModel:
         self.reg_features = None
         self.reg_loaded = False
         
+        # Model type names (for display)
+        self.clf_model_type = 'XGBoost'
+        self.reg_model_type = 'LightGBM'
+
         # Metrics from training (for display)
         self._clf_metrics = self._get_default_clf_metrics()
         self._reg_metrics = self._get_default_reg_metrics()
@@ -229,10 +233,11 @@ class CategoryModel:
                 self.clf_scaler = data.get('scaler')
                 self.clf_features = data.get('features', [])
                 self._clf_metrics = data.get('metrics', self._clf_metrics)
-                
+                self.clf_model_type = data.get('model_type', 'XGBoost')
+
                 if self.clf_model is not None:
                     self.clf_loaded = True
-                    print(f"  ✓ Loaded CLF model for {self.category} ({len(self.clf_features)} features)")
+                    print(f"  ✓ Loaded CLF model for {self.category} ({self.clf_model_type}, {len(self.clf_features)} features)")
                 else:
                     print(f"  ✗ CLF model is None in pickle file for {self.category}")
             except Exception as e:
@@ -257,10 +262,11 @@ class CategoryModel:
                 self.reg_scaler = data.get('scaler')
                 self.reg_features = data.get('features', [])
                 self._reg_metrics = data.get('metrics', self._reg_metrics)
-                
+                self.reg_model_type = data.get('model_type', 'LightGBM')
+
                 if self.reg_model is not None:
                     self.reg_loaded = True
-                    print(f"  ✓ Loaded REG model for {self.category} ({len(self.reg_features)} features)")
+                    print(f"  ✓ Loaded REG model for {self.category} ({self.reg_model_type}, {len(self.reg_features)} features)")
                 else:
                     print(f"  ✗ REG model is None in pickle file for {self.category}")
             except Exception as e:
@@ -433,7 +439,9 @@ class ModelRegistry:
                 'clf_loaded': model.clf_loaded,
                 'reg_loaded': model.reg_loaded,
                 'clf_metrics': model.clf_metrics,
-                'reg_metrics': model.reg_metrics
+                'reg_metrics': model.reg_metrics,
+                'clf_model_type': model.clf_model_type,
+                'reg_model_type': model.reg_model_type,
             })
         
         return models

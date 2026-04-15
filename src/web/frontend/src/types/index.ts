@@ -114,6 +114,8 @@ export interface ModelInfo {
   category: string;
   model_type: string;
   loaded: boolean;
+  clf_loaded?: boolean;
+  reg_loaded?: boolean;
   metrics: {
     roc_auc: number;
     f1: number;

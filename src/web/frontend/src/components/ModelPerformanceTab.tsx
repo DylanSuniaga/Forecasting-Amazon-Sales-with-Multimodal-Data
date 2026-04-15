@@ -125,19 +125,25 @@ export function ModelPerformanceTab({ onBack }: ModelPerformanceTabProps) {
             <thead>
               <tr className="border-b border-border">
                 <th className="text-left py-3 px-3 text-muted font-medium">Category</th>
+                <th className="text-center py-3 px-3 text-muted font-medium">Best Model</th>
                 <th className="text-right py-3 px-3 text-muted font-medium">ROC-AUC</th>
                 <th className="text-right py-3 px-3 text-muted font-medium">F1</th>
                 <th className="text-right py-3 px-3 text-muted font-medium">Precision</th>
                 <th className="text-right py-3 px-3 text-muted font-medium">Recall</th>
-                <th className="text-center py-3 px-3 text-muted font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
               {metrics.map((m) => {
                 const model = models.find(mod => mod.category === m.category);
+                const modelType = model?.model_type?.split('/')[0]?.replace('CLF:', '').trim() || '—';
                 return (
                   <tr key={m.category} className="border-b border-border/50 hover:bg-surface-2/30 transition-colors">
                     <td className="py-3 px-3 text-text font-medium">{m.category}</td>
+                    <td className="py-3 px-3 text-center">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary">
+                        {modelType}
+                      </span>
+                    </td>
                     <td className="py-3 px-3 text-right">
                       <MetricBadge value={m.roc_auc} />
                     </td>
@@ -149,16 +155,6 @@ export function ModelPerformanceTab({ onBack }: ModelPerformanceTabProps) {
                     </td>
                     <td className="py-3 px-3 text-right tabular-nums text-muted">
                       {m.recall.toFixed(3)}
-                    </td>
-                    <td className="py-3 px-3 text-center">
-                      <span className={cn(
-                        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                        model?.loaded
-                          ? 'bg-success/15 text-success'
-                          : 'bg-warning/15 text-warning'
-                      )}>
-                        {model?.loaded ? 'Loaded' : 'Fallback'}
-                      </span>
                     </td>
                   </tr>
                 );
@@ -179,9 +175,9 @@ export function ModelPerformanceTab({ onBack }: ModelPerformanceTabProps) {
             <thead>
               <tr className="border-b border-border">
                 <th className="text-left py-3 px-3 text-muted font-medium">Category</th>
+                <th className="text-center py-3 px-3 text-muted font-medium">Best Model</th>
                 <th className="text-right py-3 px-3 text-muted font-medium">R² Score</th>
                 <th className="text-right py-3 px-3 text-muted font-medium">MAE (log)</th>
-                <th className="text-center py-3 px-3 text-muted font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
@@ -189,9 +185,15 @@ export function ModelPerformanceTab({ onBack }: ModelPerformanceTabProps) {
                 const model = models.find(mod => mod.category === m.category);
                 const r2 = m.reg_r2 ?? model?.reg_metrics?.r2 ?? 0;
                 const mae = m.reg_mae ?? model?.reg_metrics?.mae ?? 0;
+                const regType = model?.model_type?.split('/')[1]?.replace('REG:', '').trim() || '—';
                 return (
                   <tr key={m.category} className="border-b border-border/50 hover:bg-surface-2/30 transition-colors">
                     <td className="py-3 px-3 text-text font-medium">{m.category}</td>
+                    <td className="py-3 px-3 text-center">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary">
+                        {regType}
+                      </span>
+                    </td>
                     <td className="py-3 px-3 text-right">
                       <span className={cn(
                         'inline-block tabular-nums font-medium',
@@ -212,16 +214,6 @@ export function ModelPerformanceTab({ onBack }: ModelPerformanceTabProps) {
                         {mae.toFixed(3)}
                       </span>
                     </td>
-                    <td className="py-3 px-3 text-center">
-                      <span className={cn(
-                        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                        model?.reg_metrics
-                          ? 'bg-success/15 text-success'
-                          : 'bg-warning/15 text-warning'
-                      )}>
-                        {model?.reg_metrics ? 'Loaded' : 'Fallback'}
-                      </span>
-                    </td>
                   </tr>
                 );
               })}
@@ -235,12 +227,12 @@ export function ModelPerformanceTab({ onBack }: ModelPerformanceTabProps) {
         <h3 className="text-sm font-medium text-text mb-3">Architecture</h3>
         <div className="grid sm:grid-cols-2 gap-4 text-xs text-muted leading-relaxed">
           <div>
-            <p className="text-text font-medium mb-1">Classification (Has BSR?)</p>
-            <p>XGBoost gradient boosted trees, per-category. Uses all available features (PCA embeddings + quality metrics + NLP + engineered). Train/test split: 80/20 with stratification.</p>
+            <p className="text-text font-medium mb-1">Model Selection</p>
+            <p>For each category, 6 candidates are trained (XGBoost small/med/large, LightGBM, RandomForest, ExtraTrees) and the best is kept by ROC-AUC (clf) or R² (reg). Zero-importance features are pruned before final training.</p>
           </div>
           <div>
-            <p className="text-text font-medium mb-1">Regression (BSR Rank)</p>
-            <p>XGBoost regressor on log-transformed BSR rank, per-category. Only applied when classification predicts BSR probability &gt; 50%.</p>
+            <p className="text-text font-medium mb-1">Two-Stage Pipeline</p>
+            <p>Stage 1: Classification predicts BSR entry probability. Stage 2: If probability &gt; 50%, regression predicts log-transformed BSR rank. Features: PCA embeddings + image quality + TF-IDF text + price. 80/20 train/test split.</p>
           </div>
         </div>
       </div>
