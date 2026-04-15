@@ -348,7 +348,7 @@ async def list_models():
         models.append({
             'name': model_info['name'],
             'category': model_info['category'],
-            'model_type': 'XGBoost (CLF) + LightGBM (REG)',
+            'model_type': f"CLF: {model_info.get('clf_model_type', '?')} / REG: {model_info.get('reg_model_type', '?')}",
             'loaded': model_info['clf_loaded'],
             'clf_loaded': model_info['clf_loaded'],
             'reg_loaded': model_info['reg_loaded'],
